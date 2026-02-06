@@ -91,6 +91,9 @@ impl LiteLLM {
             ProviderKind::OpenAICompatible => {
                 openai_compat::image_generation(&self.client, &resolved.config, req).await
             }
+            ProviderKind::Gemini => {
+                gemini::image_generation(&self.client, &resolved.config, req).await
+            }
             _ => Err(LiteLLMError::Unsupported(
                 "image generation not supported for provider".into(),
             )),

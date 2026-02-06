@@ -5,7 +5,8 @@ use crate::providers::resolve_api_key;
 use crate::types::{
     ChatContentPart, ChatContentPartFile, ChatContentPartImageUrl, ChatContentPartInputAudio,
     ChatContentPartText, ChatFile, ChatImageUrl, ChatInputAudio, ChatMessage, ChatMessageContent,
-    ChatRequest, ChatResponse, Usage, VideoRequest, VideoResponse,
+    ChatRequest, ChatResponse, ImageData, ImageRequest, ImageResponse, Usage, VideoRequest,
+    VideoResponse,
 };
 use base64::{engine::general_purpose, Engine as _};
 use mime_guess::MimeGuess;
@@ -201,6 +202,119 @@ pub async fn video_generation_with_options(
     }
 
     Err(LiteLLMError::http("video generation timed out"))
+}
+
+pub async fn image_generation(
+    client: &Client,
+    cfg: &ProviderConfig,
+    req: ImageRequest,
+) -> Result<ImageResponse> {
+    let base = cfg
+        .base_url
+        .clone()
+        .ok_or_else(|| LiteLLMError::Config("base_url required".into()))?;
+    let key = resolve_api_key(cfg)?
+        .ok_or_else(|| LiteLLMError::MissingApiKey("GEMINI_API_KEY".into()))?;
+    let model = req.model.trim_start_matches("models/");
+    let n = req.n.unwrap_or(1);
+
+    if model.contains("gemini") {
+        // Path A: Gemini native image generation via generateContent
+        let url = format!(
+            "{}/models/{}:generateContent",
+            base.trim_end_matches('/'),
+            model
+        );
+
+        let body = serde_json::json!({
+            "contents": [{ "parts": [{ "text": req.prompt }] }],
+            "generationConfig": { "response_modalities": ["IMAGE", "TEXT"] }
+        });
+
+        let mut builder = client.post(url).header("x-goog-api-key", &key).json(&body);
+        for (k, v) in &cfg.extra_headers {
+            builder = builder.header(k, v);
+        }
+
+        let (resp, _headers) = send_json::<Value>(builder).await?;
+        let usage = parse_usage(&resp);
+        let images = extract_images_from_candidates(&resp);
+
+        Ok(ImageResponse {
+            images,
+            usage,
+            raw: Some(resp),
+        })
+    } else {
+        // Path B: Imagen models via predict endpoint
+        let url = format!("{}/models/{}:predict", base.trim_end_matches('/'), model);
+
+        let body = serde_json::json!({
+            "instances": [{ "prompt": req.prompt }],
+            "parameters": { "sampleCount": n }
+        });
+
+        let mut builder = client.post(url).header("x-goog-api-key", &key).json(&body);
+        for (k, v) in &cfg.extra_headers {
+            builder = builder.header(k, v);
+        }
+
+        let (resp, _headers) = send_json::<Value>(builder).await?;
+        let images = extract_images_from_predictions(&resp);
+
+        Ok(ImageResponse {
+            images,
+            usage: Usage::default(),
+            raw: Some(resp),
+        })
+    }
+}
+
+fn extract_images_from_candidates(resp: &Value) -> Vec<ImageData> {
+    let mut images = Vec::new();
+    if let Some(candidates) = resp.get("candidates").and_then(|v| v.as_array()) {
+        for candidate in candidates {
+            if let Some(parts) = candidate
+                .get("content")
+                .and_then(|v| v.get("parts"))
+                .and_then(|v| v.as_array())
+            {
+                for part in parts {
+                    if let Some(data) = part
+                        .get("inlineData")
+                        .and_then(|v| v.get("data"))
+                        .and_then(|v| v.as_str())
+                    {
+                        images.push(ImageData {
+                            b64_json: Some(data.to_string()),
+                            url: None,
+                            revised_prompt: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    images
+}
+
+fn extract_images_from_predictions(resp: &Value) -> Vec<ImageData> {
+    let mut images = Vec::new();
+    if let Some(predictions) = resp.get("predictions").and_then(|v| v.as_array()) {
+        for prediction in predictions {
+            if let Some(data) = prediction
+                .get("bytesBase64Encoded")
+                .and_then(|v| v.as_str())
+            {
+                images.push(ImageData {
+                    b64_json: Some(data.to_string()),
+                    url: None,
+                    revised_prompt: None,
+                });
+            }
+        }
+    }
+    images
 }
 
 fn extract_text(resp: &Value) -> String {

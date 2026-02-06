@@ -7,7 +7,7 @@
 //! - Configuration validation
 
 use litellm_rs::config::ProviderConfig;
-use litellm_rs::providers::{anthropic, openai_compat};
+use litellm_rs::providers::{anthropic, gemini, openai_compat};
 use litellm_rs::types::{ChatMessage, ChatMessageContent, ChatRequest};
 use reqwest::Client;
 use serde_json::json;
@@ -823,6 +823,120 @@ mod image_generation_tests {
             .unwrap();
 
         assert!(resp.images.is_empty());
+    }
+}
+
+// =============================================================================
+// Gemini Image Generation Tests
+// =============================================================================
+
+mod gemini_image_generation_tests {
+    use super::*;
+    use litellm_rs::types::ImageRequest;
+
+    /// Verifies Gemini native image generation uses generateContent with response_modalities
+    /// and extracts base64 from candidates[].content.parts[].inlineData.data
+    #[tokio::test]
+    async fn gemini_native_image_generation() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path(
+                "/models/gemini-2.0-flash-preview-image-generation:generateContent",
+            ))
+            .and(header("x-goog-api-key", "test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{
+                    "content": {
+                        "parts": [
+                            {
+                                "inlineData": {
+                                    "mimeType": "image/png",
+                                    "data": "iVBORw0KGgoAAAANSUhEUg=="
+                                }
+                            },
+                            {
+                                "text": "Here is the generated image."
+                            }
+                        ]
+                    }
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 12,
+                    "candidatesTokenCount": 1,
+                    "totalTokenCount": 13
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = ImageRequest {
+            model: "gemini-2.0-flash-preview-image-generation".to_string(),
+            prompt: "A cartoon banana".to_string(),
+            n: Some(1),
+            size: None,
+            quality: None,
+            background: None,
+        };
+
+        let resp = gemini::image_generation(&make_client(), &cfg, req)
+            .await
+            .unwrap();
+
+        assert_eq!(resp.images.len(), 1);
+        assert_eq!(
+            resp.images[0].b64_json,
+            Some("iVBORw0KGgoAAAANSUhEUg==".to_string())
+        );
+        assert_eq!(resp.usage.prompt_tokens, Some(12));
+        assert_eq!(resp.usage.total_tokens, Some(13));
+    }
+
+    /// Verifies Imagen model uses predict endpoint and extracts from predictions[].bytesBase64Encoded
+    #[tokio::test]
+    async fn gemini_imagen_image_generation() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/models/imagen-3.0-generate-002:predict"))
+            .and(header("x-goog-api-key", "test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "predictions": [
+                    { "bytesBase64Encoded": "AAAA", "mimeType": "image/png" },
+                    { "bytesBase64Encoded": "BBBB", "mimeType": "image/png" }
+                ]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = ImageRequest {
+            model: "imagen-3.0-generate-002".to_string(),
+            prompt: "A sunset".to_string(),
+            n: Some(2),
+            size: None,
+            quality: None,
+            background: None,
+        };
+
+        let resp = gemini::image_generation(&make_client(), &cfg, req)
+            .await
+            .unwrap();
+
+        assert_eq!(resp.images.len(), 2);
+        assert_eq!(resp.images[0].b64_json, Some("AAAA".to_string()));
+        assert_eq!(resp.images[1].b64_json, Some("BBBB".to_string()));
     }
 }
 
