@@ -1,11 +1,17 @@
 # Gitleaks configuration for litellm-rs
-# Focus: AI provider API keys, OAuth tokens
+# Extends the default gitleaks ruleset (AWS, GCP, private keys, JWTs, etc.)
+# and adds LLM provider-specific patterns on top.
 #
 # Run locally: gitleaks detect --config .gitleaks.toml
 
 title = "litellm-rs gitleaks config"
 
-# -- AI Provider API Keys --
+# Inherit all default rules (200+ patterns for generic secrets, cloud
+# provider keys, private keys, database connection strings, etc.)
+[extend]
+useDefault = true
+
+# -- LLM Provider API Keys (not in default ruleset) --
 
 [[rules]]
 id = "openai-api-key"
@@ -48,16 +54,6 @@ description = "xAI / Grok API Key"
 regex = '''\b(xai-[A-Za-z0-9_-]{20,})\b'''
 keywords = ["xai-"]
 tags = ["ai", "xai"]
-
-# -- OAuth / Session Tokens --
-
-[[rules]]
-id = "bearer-token-hardcoded"
-description = "Hardcoded bearer token in source"
-regex = '''(?i)(?:bearer|authorization)['":\s]+([A-Za-z0-9_-]{40,})'''
-keywords = ["bearer", "authorization"]
-tags = ["oauth", "token"]
-entropy = 3.5
 
 # -- Global Allowlist --
 
