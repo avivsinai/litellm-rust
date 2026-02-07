@@ -7,9 +7,11 @@ license = "MIT"
 repository = "https://github.com/avivsinai/litellm-rs"
 homepage = "https://github.com/avivsinai/litellm-rs"
 description = "Minimal Rust SDK port of LiteLLM – unified interface for chat, embeddings, images, and video across OpenAI-compatible, Anthropic, Gemini, and xAI providers"
+readme = "README.md"
 keywords = ["llm", "ai", "openai", "anthropic", "gemini"]
 categories = ["api-bindings", "asynchronous"]
 authors = ["Aviv Sinai"]
+exclude = ["/tests", "/.github", "/.gitleaks.toml", "/CLAUDE.md", "/AGENTS.md"]
 
 [dependencies]
 anyhow = "1.0"
@@ -32,8 +34,8 @@ wiremock = "0.6"
 tokio-test = "0.4"
 
 [lints.rust]
-unsafe_code = "warn"
-rust_2018_idioms = "warn"
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
@@ -41,3 +43,7 @@ cast_possible_truncation = "allow"
 needless_pass_by_value = "allow"
 too_many_arguments = "allow"
 items_after_test_module = "allow"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

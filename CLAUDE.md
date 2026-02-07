@@ -18,7 +18,7 @@ cargo fmt --all -- --check           # Check formatting
 cargo doc --no-deps                  # Build docs (CI uses RUSTDOCFLAGS=-D warnings)
 ```
 
-MSRV is Rust 1.88. CI also runs `cargo-deny` (dependency audit) and `gitleaks` (secret scanning).
+MSRV is Rust 1.88. CI also runs `cargo-deny` (dependency audit, configured in `deny.toml`) and `gitleaks` (secret scanning with LLM-specific rules in `.gitleaks.toml`). Doc builds use `RUSTDOCFLAGS=-D warnings`.
 
 ## Architecture
 

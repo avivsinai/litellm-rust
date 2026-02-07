@@ -93,9 +93,9 @@ mod tests {
     #[test]
     fn resolve_with_prefix() {
         let config = Config::default();
-        let resolved = resolve_model("openai/gpt-5.2", &config).unwrap();
+        let resolved = resolve_model("openai/gpt-4o", &config).unwrap();
         assert_eq!(resolved.provider, "openai");
-        assert_eq!(resolved.model, "gpt-5.2");
+        assert_eq!(resolved.model, "gpt-4o");
     }
 
     #[test]
@@ -104,8 +104,8 @@ mod tests {
             default_provider: Some("openai".to_string()),
             ..Config::default()
         };
-        let resolved = resolve_model("gpt-5.2", &config).unwrap();
+        let resolved = resolve_model("gpt-4o", &config).unwrap();
         assert_eq!(resolved.provider, "openai");
-        assert_eq!(resolved.model, "gpt-5.2");
+        assert_eq!(resolved.model, "gpt-4o");
     }
 }

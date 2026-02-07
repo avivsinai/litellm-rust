@@ -26,7 +26,7 @@ Minimal Rust SDK port of [LiteLLM](https://github.com/BerriAI/litellm) (library 
 |----------|------|-----------|------------|--------|-------|
 | OpenAI-compatible | yes | yes | yes | yes | yes |
 | Anthropic | yes | yes | - | - | - |
-| Gemini | yes | - | - | - | yes |
+| Gemini | yes | - | - | yes | yes |
 | xAI | yes | yes | - | - | - |
 
 ## Installation
@@ -63,7 +63,7 @@ async fn main() -> anyhow::Result<()> {
         );
 
     let resp = client
-        .completion(ChatRequest::new("openai/gpt-5.2").message("user", "hello"))
+        .completion(ChatRequest::new("openai/gpt-4o").message("user", "hello"))
         .await?;
     println!("{}", resp.content);
 
@@ -110,7 +110,7 @@ use litellm_rs::{LiteLLM, ChatRequest};
 # async fn run() -> anyhow::Result<()> {
 let client = LiteLLM::new()?;
 let mut stream = client
-    .stream_completion(ChatRequest::new("openai/gpt-5.2").message("user", "hello"))
+    .stream_completion(ChatRequest::new("openai/gpt-4o").message("user", "hello"))
     .await?;
 while let Some(chunk) = stream.next().await {
     let chunk = chunk?;
@@ -132,7 +132,11 @@ Set API keys via environment variables:
 | `OPENROUTER_API_KEY` | OpenRouter |
 | `XAI_API_KEY` | xAI / Grok |
 
-Model routing uses `provider/model` format (e.g., `openai/gpt-5.2`, `openrouter/anthropic/claude-sonnet-4-5`).
+Model routing uses `provider/model` format (e.g., `openai/gpt-4o`, `openrouter/anthropic/claude-sonnet-4-5`).
+
+## Minimum Supported Rust Version
+
+The MSRV is **Rust 1.88**. This is verified in CI.
 
 ## Notes
 

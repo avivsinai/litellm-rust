@@ -60,11 +60,12 @@ Use clear, descriptive commit messages:
 
 ## Adding a New Provider
 
-1. Create `src/providers/your_provider.rs`
-2. Implement the provider trait following the pattern in `openai_compat.rs` or `anthropic.rs`
-3. Register it in `src/providers/mod.rs`
-4. Add integration tests in `tests/integration_providers.rs` using WireMock
-5. Update `data/provider_endpoints_support.json` if applicable
+1. Create `src/providers/your_provider.rs` with `chat()`, `chat_stream()`, etc. following the pattern in `openai_compat.rs` or `anthropic.rs`
+2. Add the variant to `ProviderKind` in `src/config.rs`
+3. Register default config in `router::default_provider_config()` and add `pub mod` in `src/providers/mod.rs`
+4. Add dispatch arms in `src/client.rs` methods
+5. Add WireMock-based tests in `tests/integration_providers.rs`
+6. Update `data/provider_endpoints_support.json` if applicable
 
 ## Reporting Issues
 
