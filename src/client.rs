@@ -5,8 +5,8 @@ use crate::registry::Registry;
 use crate::router::{resolve_model, ResolvedModel};
 use crate::stream::ChatStream;
 use crate::types::{
-    ChatRequest, ChatResponse, EmbeddingRequest, EmbeddingResponse, ImageRequest, ImageResponse,
-    VideoRequest, VideoResponse,
+    ChatRequest, ChatResponse, EmbeddingRequest, EmbeddingResponse, ImageEditRequest, ImageRequest,
+    ImageResponse, VideoRequest, VideoResponse,
 };
 use reqwest::Client;
 
@@ -96,6 +96,19 @@ impl LiteLLM {
             }
             _ => Err(LiteLLMError::Unsupported(
                 "image generation not supported for provider".into(),
+            )),
+        }
+    }
+
+    pub async fn image_editing(&self, mut req: ImageEditRequest) -> Result<ImageResponse> {
+        let resolved = resolve_model(&req.model, &self.config)?;
+        req.model = resolved.model.clone();
+        match resolved.config.kind {
+            ProviderKind::Gemini => {
+                gemini::image_editing(&self.client, &resolved.config, req).await
+            }
+            _ => Err(LiteLLMError::Unsupported(
+                "image editing not supported for provider".into(),
             )),
         }
     }

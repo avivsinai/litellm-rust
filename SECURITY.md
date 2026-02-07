@@ -2,7 +2,7 @@
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in litellm-rs, please report it responsibly.
+If you discover a security vulnerability in litellm-rust, please report it responsibly.
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
@@ -23,7 +23,7 @@ Instead, please email: **aviv@sinai.dev**
 
 ## Scope
 
-This policy covers the litellm-rs crate itself. Issues with upstream LLM provider APIs should be reported to those providers directly.
+This policy covers the litellm-rust crate itself. Issues with upstream LLM provider APIs should be reported to those providers directly.
 
 ## Security Measures
 

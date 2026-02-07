@@ -1,10 +1,10 @@
-# Gitleaks configuration for litellm-rs
+# Gitleaks configuration for litellm-rust
 # Extends the default gitleaks ruleset (AWS, GCP, private keys, JWTs, etc.)
 # and adds LLM provider-specific patterns on top.
 #
 # Run locally: gitleaks detect --config .gitleaks.toml
 
-title = "litellm-rs gitleaks config"
+title = "litellm-rust gitleaks config"
 
 # Inherit all default rules (200+ patterns for generic secrets, cloud
 # provider keys, private keys, database connection strings, etc.)

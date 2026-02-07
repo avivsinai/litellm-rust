@@ -1,17 +1,20 @@
 [package]
-name = "litellm-rs"
+name = "litellm-rust"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.88"
 license = "MIT"
-repository = "https://github.com/avivsinai/litellm-rs"
-homepage = "https://github.com/avivsinai/litellm-rs"
+repository = "https://github.com/avivsinai/litellm-rust"
+homepage = "https://github.com/avivsinai/litellm-rust"
 description = "Minimal Rust SDK port of LiteLLM – unified interface for chat, embeddings, images, and video across OpenAI-compatible, Anthropic, Gemini, and xAI providers"
 readme = "README.md"
 keywords = ["llm", "ai", "openai", "anthropic", "gemini"]
 categories = ["api-bindings", "asynchronous"]
 authors = ["Aviv Sinai"]
 exclude = ["/tests", "/.github", "/.gitleaks.toml", "/CLAUDE.md", "/AGENTS.md"]
+
+[lib]
+name = "litellm_rs"
 
 [dependencies]
 anyhow = "1.0"

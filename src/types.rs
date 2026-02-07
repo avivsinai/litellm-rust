@@ -240,6 +240,23 @@ pub struct ImageData {
     pub b64_json: Option<String>,
     pub url: Option<String>,
     pub revised_prompt: Option<String>,
+    pub mime_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageEditRequest {
+    pub model: String,
+    pub prompt: String,
+    pub images: Vec<ImageInputData>,
+    pub n: Option<u32>,
+    pub size: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageInputData {
+    pub b64_json: Option<String>,
+    pub url: Option<String>,
+    pub mime_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

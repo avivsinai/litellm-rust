@@ -1,7 +1,7 @@
 //! Unified Rust SDK for chat completions, embeddings, images, and video across
 //! multiple LLM providers.
 //!
-//! litellm-rs is a Rust port of [LiteLLM](https://github.com/BerriAI/litellm).
+//! litellm-rust is a Rust port of [LiteLLM](https://github.com/BerriAI/litellm).
 //! It provides a single [`LiteLLM`] client that routes requests to OpenAI-compatible,
 //! Anthropic, Gemini, and xAI backends using a `"provider/model"` format.
 //!

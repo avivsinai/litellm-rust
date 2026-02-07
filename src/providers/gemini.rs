@@ -5,8 +5,8 @@ use crate::providers::resolve_api_key;
 use crate::types::{
     ChatContentPart, ChatContentPartFile, ChatContentPartImageUrl, ChatContentPartInputAudio,
     ChatContentPartText, ChatFile, ChatImageUrl, ChatInputAudio, ChatMessage, ChatMessageContent,
-    ChatRequest, ChatResponse, ImageData, ImageRequest, ImageResponse, Usage, VideoRequest,
-    VideoResponse,
+    ChatRequest, ChatResponse, ImageData, ImageEditRequest, ImageInputData, ImageRequest,
+    ImageResponse, Usage, VideoRequest, VideoResponse,
 };
 use base64::{engine::general_purpose, Engine as _};
 use mime_guess::MimeGuess;
@@ -80,7 +80,7 @@ pub async fn chat(client: &Client, cfg: &ProviderConfig, req: ChatRequest) -> Re
         || env::var("YOETZ_GEMINI_DEBUG").ok().as_deref() == Some("1");
     if debug {
         if let Ok(pretty) = serde_json::to_string_pretty(&resp) {
-            eprintln!("litellm-rs gemini raw response:\n{pretty}");
+            eprintln!("litellm-rust gemini raw response:\n{pretty}");
         }
     }
 
@@ -270,6 +270,73 @@ pub async fn image_generation(
     }
 }
 
+pub async fn image_editing(
+    client: &Client,
+    cfg: &ProviderConfig,
+    req: ImageEditRequest,
+) -> Result<ImageResponse> {
+    let base = cfg
+        .base_url
+        .clone()
+        .ok_or_else(|| LiteLLMError::Config("base_url required".into()))?;
+    let key = resolve_api_key(cfg)?
+        .ok_or_else(|| LiteLLMError::MissingApiKey("GEMINI_API_KEY".into()))?;
+    let model = req.model.trim_start_matches("models/");
+
+    let url = format!(
+        "{}/models/{}:generateContent",
+        base.trim_end_matches('/'),
+        model
+    );
+
+    let mut parts = Vec::with_capacity(req.images.len() + 1);
+    parts.push(serde_json::json!({ "text": req.prompt }));
+    for image in &req.images {
+        parts.push(image_input_to_part(client, image).await?);
+    }
+
+    let body = serde_json::json!({
+        "contents": [{ "role": "user", "parts": parts }],
+        "generationConfig": {
+            "response_modalities": ["IMAGE", "TEXT"]
+        }
+    });
+
+    let mut builder = client.post(url).header("x-goog-api-key", &key).json(&body);
+    for (k, v) in &cfg.extra_headers {
+        builder = builder.header(k, v);
+    }
+
+    let (resp, _headers) = send_json::<Value>(builder).await?;
+    let usage = parse_usage(&resp);
+    let images = extract_images_from_candidates(&resp);
+
+    Ok(ImageResponse {
+        images,
+        usage,
+        raw: Some(resp),
+    })
+}
+
+async fn image_input_to_part(_client: &Client, input: &ImageInputData) -> Result<Value> {
+    if let Some(b64) = &input.b64_json {
+        let mime = input
+            .mime_type
+            .as_deref()
+            .unwrap_or("image/png")
+            .to_string();
+        return Ok(serde_json::json!({
+            "inline_data": { "mime_type": mime, "data": b64 }
+        }));
+    }
+    if let Some(url) = &input.url {
+        return process_gemini_media_url(url, input.mime_type.as_deref(), None, None, "");
+    }
+    Err(LiteLLMError::Config(
+        "ImageInputData requires b64_json or url".into(),
+    ))
+}
+
 fn extract_images_from_candidates(resp: &Value) -> Vec<ImageData> {
     let mut images = Vec::new();
     if let Some(candidates) = resp.get("candidates").and_then(|v| v.as_array()) {
@@ -285,10 +352,16 @@ fn extract_images_from_candidates(resp: &Value) -> Vec<ImageData> {
                         .and_then(|v| v.get("data"))
                         .and_then(|v| v.as_str())
                     {
+                        let mime = part
+                            .get("inlineData")
+                            .and_then(|v| v.get("mimeType"))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
                         images.push(ImageData {
                             b64_json: Some(data.to_string()),
                             url: None,
                             revised_prompt: None,
+                            mime_type: mime,
                         });
                     }
                 }
@@ -306,10 +379,15 @@ fn extract_images_from_predictions(resp: &Value) -> Vec<ImageData> {
                 .get("bytesBase64Encoded")
                 .and_then(|v| v.as_str())
             {
+                let mime = prediction
+                    .get("mimeType")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 images.push(ImageData {
                     b64_json: Some(data.to_string()),
                     url: None,
                     revised_prompt: None,
+                    mime_type: mime,
                 });
             }
         }

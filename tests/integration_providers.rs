@@ -894,6 +894,7 @@ mod gemini_image_generation_tests {
             resp.images[0].b64_json,
             Some("iVBORw0KGgoAAAANSUhEUg==".to_string())
         );
+        assert_eq!(resp.images[0].mime_type, Some("image/png".to_string()));
         assert_eq!(resp.usage.prompt_tokens, Some(12));
         assert_eq!(resp.usage.total_tokens, Some(13));
     }
@@ -937,6 +938,286 @@ mod gemini_image_generation_tests {
         assert_eq!(resp.images.len(), 2);
         assert_eq!(resp.images[0].b64_json, Some("AAAA".to_string()));
         assert_eq!(resp.images[1].b64_json, Some("BBBB".to_string()));
+    }
+}
+
+// =============================================================================
+// Gemini Image Editing Tests
+// =============================================================================
+
+mod gemini_image_editing_tests {
+    use super::*;
+    use litellm_rs::types::{ImageEditRequest, ImageInputData};
+    use wiremock::matchers::body_json;
+
+    /// Verifies image editing with base64 input sends correct request body
+    /// and extracts output images with mime_type.
+    #[tokio::test]
+    async fn image_editing_with_b64_input() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path(
+                "/models/gemini-2.0-flash-preview-image-generation:generateContent",
+            ))
+            .and(header("x-goog-api-key", "test-key"))
+            .and(body_json(json!({
+                "contents": [{
+                    "role": "user",
+                    "parts": [
+                        { "text": "Make the sky purple" },
+                        { "inline_data": { "mime_type": "image/png", "data": "aW5wdXQ=" } }
+                    ]
+                }],
+                "generationConfig": {
+                    "response_modalities": ["IMAGE", "TEXT"]
+                }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "inlineData": {
+                                "mimeType": "image/jpeg",
+                                "data": "b3V0cHV0"
+                            }
+                        }]
+                    }
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 258,
+                    "candidatesTokenCount": 1,
+                    "totalTokenCount": 259
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = ImageEditRequest {
+            model: "gemini-2.0-flash-preview-image-generation".to_string(),
+            prompt: "Make the sky purple".to_string(),
+            images: vec![ImageInputData {
+                b64_json: Some("aW5wdXQ=".to_string()),
+                url: None,
+                mime_type: Some("image/png".to_string()),
+            }],
+            n: None,
+            size: None,
+        };
+
+        let resp = gemini::image_editing(&make_client(), &cfg, req)
+            .await
+            .unwrap();
+
+        assert_eq!(resp.images.len(), 1);
+        assert_eq!(resp.images[0].b64_json, Some("b3V0cHV0".to_string()));
+        assert_eq!(resp.images[0].mime_type, Some("image/jpeg".to_string()));
+        assert_eq!(resp.usage.prompt_tokens, Some(258));
+    }
+
+    /// Verifies image editing with URL input uses file_data reference.
+    #[tokio::test]
+    async fn image_editing_with_url_input() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path(
+                "/models/gemini-2.0-flash-preview-image-generation:generateContent",
+            ))
+            .and(body_json(json!({
+                "contents": [{
+                    "role": "user",
+                    "parts": [
+                        { "text": "Add a hat" },
+                        {
+                            "file_data": {
+                                "mime_type": "image/png",
+                                "file_uri": "https://example.com/photo.png"
+                            }
+                        }
+                    ]
+                }],
+                "generationConfig": {
+                    "response_modalities": ["IMAGE", "TEXT"]
+                }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "inlineData": {
+                                "mimeType": "image/png",
+                                "data": "ZWRpdGVk"
+                            }
+                        }]
+                    }
+                }],
+                "usageMetadata": {}
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = ImageEditRequest {
+            model: "gemini-2.0-flash-preview-image-generation".to_string(),
+            prompt: "Add a hat".to_string(),
+            images: vec![ImageInputData {
+                b64_json: None,
+                url: Some("https://example.com/photo.png".to_string()),
+                mime_type: None,
+            }],
+            n: None,
+            size: None,
+        };
+
+        let resp = gemini::image_editing(&make_client(), &cfg, req)
+            .await
+            .unwrap();
+
+        assert_eq!(resp.images.len(), 1);
+        assert_eq!(resp.images[0].b64_json, Some("ZWRpdGVk".to_string()));
+    }
+
+    /// Verifies image editing with multiple input images.
+    #[tokio::test]
+    async fn image_editing_with_multiple_images() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path(
+                "/models/gemini-2.0-flash-preview-image-generation:generateContent",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{
+                    "content": {
+                        "parts": [
+                            { "inlineData": { "mimeType": "image/png", "data": "img1" } },
+                            { "inlineData": { "mimeType": "image/webp", "data": "img2" } }
+                        ]
+                    }
+                }],
+                "usageMetadata": {}
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = ImageEditRequest {
+            model: "gemini-2.0-flash-preview-image-generation".to_string(),
+            prompt: "Combine these images".to_string(),
+            images: vec![
+                ImageInputData {
+                    b64_json: Some("YQ==".to_string()),
+                    url: None,
+                    mime_type: Some("image/png".to_string()),
+                },
+                ImageInputData {
+                    b64_json: Some("Yg==".to_string()),
+                    url: None,
+                    mime_type: Some("image/jpeg".to_string()),
+                },
+            ],
+            n: None,
+            size: None,
+        };
+
+        let resp = gemini::image_editing(&make_client(), &cfg, req)
+            .await
+            .unwrap();
+
+        assert_eq!(resp.images.len(), 2);
+        assert_eq!(resp.images[0].mime_type, Some("image/png".to_string()));
+        assert_eq!(resp.images[1].mime_type, Some("image/webp".to_string()));
+    }
+
+    /// Verifies image editing with empty response returns empty images vec.
+    #[tokio::test]
+    async fn image_editing_empty_response() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path(
+                "/models/gemini-2.0-flash-preview-image-generation:generateContent",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{
+                    "content": {
+                        "parts": [{ "text": "I cannot edit this image." }]
+                    }
+                }],
+                "usageMetadata": {}
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = ImageEditRequest {
+            model: "gemini-2.0-flash-preview-image-generation".to_string(),
+            prompt: "Edit this".to_string(),
+            images: vec![ImageInputData {
+                b64_json: Some("aW1n".to_string()),
+                url: None,
+                mime_type: Some("image/png".to_string()),
+            }],
+            n: None,
+            size: None,
+        };
+
+        let resp = gemini::image_editing(&make_client(), &cfg, req)
+            .await
+            .unwrap();
+
+        assert!(resp.images.is_empty());
+    }
+
+    /// Verifies missing input data returns config error.
+    #[tokio::test]
+    async fn image_editing_requires_image_data() {
+        let mock_server = MockServer::start().await;
+
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = ImageEditRequest {
+            model: "gemini-2.0-flash-preview-image-generation".to_string(),
+            prompt: "Edit".to_string(),
+            images: vec![ImageInputData {
+                b64_json: None,
+                url: None,
+                mime_type: None,
+            }],
+            n: None,
+            size: None,
+        };
+
+        let err = gemini::image_editing(&make_client(), &cfg, req)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("b64_json or url"));
     }
 }
 

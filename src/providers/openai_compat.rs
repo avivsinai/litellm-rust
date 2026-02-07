@@ -296,6 +296,7 @@ pub async fn image_generation(
                         .get("revised_prompt")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string()),
+                    mime_type: None,
                 })
                 .collect::<Vec<_>>()
         })

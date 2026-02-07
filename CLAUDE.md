@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-litellm-rs is a Rust port of LiteLLM — a unified SDK for chat completions, embeddings, images, and video across multiple LLM providers (OpenAI-compatible, Anthropic, Gemini, xAI). Library only, no proxy/server.
+litellm-rust is a Rust port of LiteLLM — a unified SDK for chat completions, embeddings, images, and video across multiple LLM providers (OpenAI-compatible, Anthropic, Gemini, xAI). Library only, no proxy/server.
 
 ## Build & Development Commands
 

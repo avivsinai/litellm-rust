@@ -1,6 +1,6 @@
-# litellm-rs
+# litellm-rust
 
-[![CI](https://github.com/avivsinai/litellm-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/avivsinai/litellm-rs/actions/workflows/ci.yml)
+[![CI](https://github.com/avivsinai/litellm-rust/actions/workflows/ci.yml/badge.svg)](https://github.com/avivsinai/litellm-rust/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust: 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org/)
 
@@ -35,7 +35,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-litellm-rs = { git = "https://github.com/avivsinai/litellm-rs" }
+litellm-rust = { git = "https://github.com/avivsinai/litellm-rust" }
 ```
 
 ## Quick Start

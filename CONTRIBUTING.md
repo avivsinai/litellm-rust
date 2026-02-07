@@ -1,6 +1,6 @@
-# Contributing to litellm-rs
+# Contributing to litellm-rust
 
-Thank you for your interest in contributing to litellm-rs!
+Thank you for your interest in contributing to litellm-rust!
 
 ## Development Setup
 
@@ -13,8 +13,8 @@ Thank you for your interest in contributing to litellm-rs!
 
 ```bash
 # Clone the repository
-git clone https://github.com/avivsinai/litellm-rs.git
-cd litellm-rs
+git clone https://github.com/avivsinai/litellm-rust.git
+cd litellm-rust
 
 # Build
 cargo build

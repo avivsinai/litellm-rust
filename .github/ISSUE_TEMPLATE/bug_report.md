@@ -1,6 +1,6 @@
 ---
 name: Bug Report
-about: Report a bug in litellm-rs
+about: Report a bug in litellm-rust
 title: ''
 labels: bug
 assignees: ''
@@ -18,7 +18,7 @@ What you expected to happen.
 **Environment**
 - Rust version: [e.g. 1.88]
 - OS: [e.g. macOS 15, Ubuntu 24.04]
-- litellm-rs version: [e.g. 0.1.0]
+- litellm-rust version: [e.g. 0.1.0]
 - Provider: [e.g. OpenAI, Anthropic, Gemini]
 
 **Additional context**
