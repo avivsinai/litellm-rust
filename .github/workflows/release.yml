@@ -17,7 +17,7 @@ jobs:
     needs: ci
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Check tag vs Cargo.toml version
         run: |
           CRATE_VERSION="v$(cargo metadata --format-version=1 --no-deps \
@@ -32,7 +32,7 @@ jobs:
     needs: check-version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo publish
@@ -46,7 +46,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
