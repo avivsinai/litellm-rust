@@ -34,7 +34,9 @@ struct OpenAIChoice {
 
 #[derive(Debug, Deserialize)]
 struct OpenAIMessage {
-    content: Option<String>,
+    content: Option<Value>,
+    reasoning: Option<String>,
+    reasoning_details: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -149,7 +151,7 @@ pub async fn chat(client: &Client, cfg: &ProviderConfig, req: ChatRequest) -> Re
     let content = parsed
         .choices
         .first()
-        .and_then(|c| c.message.content.clone())
+        .map(|c| extract_message_text(&c.message))
         .unwrap_or_default();
     let header_cost = headers
         .get("x-litellm-response-cost")
@@ -167,6 +169,46 @@ pub async fn chat(client: &Client, cfg: &ProviderConfig, req: ChatRequest) -> Re
         header_cost,
         raw: None,
     })
+}
+
+fn extract_message_text(message: &OpenAIMessage) -> String {
+    extract_text_value(message.content.as_ref())
+        .or_else(|| {
+            message
+                .reasoning
+                .as_ref()
+                .filter(|text| !text.trim().is_empty())
+                .cloned()
+        })
+        .or_else(|| extract_text_value(message.reasoning_details.as_ref()))
+        .unwrap_or_default()
+}
+
+fn extract_text_value(value: Option<&Value>) -> Option<String> {
+    let mut out = String::new();
+    collect_text_fragments(value?, &mut out);
+    (!out.trim().is_empty()).then_some(out)
+}
+
+fn collect_text_fragments(value: &Value, out: &mut String) {
+    match value {
+        Value::String(text) => out.push_str(text),
+        Value::Array(items) => {
+            for item in items {
+                collect_text_fragments(item, out);
+            }
+        }
+        Value::Object(map) => {
+            if let Some(text) = map.get("text") {
+                collect_text_fragments(text, out);
+            } else if let Some(content) = map.get("content") {
+                collect_text_fragments(content, out);
+            } else if let Some(value) = map.get("value") {
+                collect_text_fragments(value, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 pub async fn chat_stream(
