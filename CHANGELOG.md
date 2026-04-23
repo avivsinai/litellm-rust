@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-04-23
+
+### Fixed
+
+- Map OpenAI-compatible JSON body-read timeouts to HTTP errors instead of parse failures
+- Extract assistant text from OpenAI-compatible `content` arrays, `reasoning`, and `reasoning_details`
+
 ## [0.1.1] - 2026-02-07
 
 ### Fixed

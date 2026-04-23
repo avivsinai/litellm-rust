@@ -377,6 +377,117 @@ mod openai_compat_tests {
 
         assert_eq!(resp.content, "");
     }
+
+    /// Verifies content arrays are flattened into a single text response.
+    #[tokio::test]
+    async fn chat_completion_extracts_text_from_content_parts() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "chatcmpl-parts",
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            { "type": "text", "text": "Hello " },
+                            { "type": "text", "text": { "value": "from array parts" } },
+                            { "type": "image_url", "image_url": { "url": "https://example.com/cat.png" } }
+                        ]
+                    }
+                }],
+                "usage": { "prompt_tokens": 12, "completion_tokens": 4 }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = simple_chat_request("openrouter/openai-compatible");
+        let resp = openai_compat::chat(&make_client(), &cfg, req)
+            .await
+            .unwrap();
+
+        assert_eq!(resp.content, "Hello from array parts");
+    }
+
+    /// Verifies reasoning is used when content is empty.
+    #[tokio::test]
+    async fn chat_completion_falls_back_to_reasoning() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "chatcmpl-reasoning",
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "reasoning": "Reasoning fallback text"
+                    }
+                }],
+                "usage": { "prompt_tokens": 20, "completion_tokens": 7 }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = simple_chat_request("moonshotai/kimi-k2.6");
+        let resp = openai_compat::chat(&make_client(), &cfg, req)
+            .await
+            .unwrap();
+
+        assert_eq!(resp.content, "Reasoning fallback text");
+    }
+
+    /// Verifies reasoning_details text is used when both content and reasoning are empty.
+    #[tokio::test]
+    async fn chat_completion_falls_back_to_reasoning_details() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "chatcmpl-reasoning-details",
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "reasoning_details": [
+                            { "type": "reasoning.text", "text": "Reasoning " },
+                            { "type": "reasoning.text", "text": "details fallback" }
+                        ]
+                    }
+                }],
+                "usage": { "prompt_tokens": 24, "completion_tokens": 9 }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = simple_chat_request("openrouter/openai-compatible");
+        let resp = openai_compat::chat(&make_client(), &cfg, req)
+            .await
+            .unwrap();
+
+        assert_eq!(resp.content, "Reasoning details fallback");
+    }
 }
 
 // =============================================================================

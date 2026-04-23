@@ -103,10 +103,7 @@ pub async fn send_json_once<T: serde::de::DeserializeOwned>(
         )));
     }
 
-    let parsed = resp
-        .json()
-        .await
-        .map_err(|e| LiteLLMError::Parse(e.to_string()))?;
+    let parsed = resp.json().await.map_err(map_json_error)?;
     Ok((parsed, headers))
 }
 
@@ -134,10 +131,7 @@ where
                 let headers = response.headers().clone();
 
                 if status.is_success() {
-                    let parsed = response
-                        .json()
-                        .await
-                        .map_err(|e| LiteLLMError::Parse(e.to_string()))?;
+                    let parsed = response.json().await.map_err(map_json_error)?;
                     return Ok((parsed, headers));
                 }
 
@@ -179,9 +173,29 @@ where
     Err(last_error.unwrap_or_else(|| LiteLLMError::http("max retries exceeded")))
 }
 
+fn map_json_error(err: reqwest::Error) -> LiteLLMError {
+    if err.is_timeout() {
+        let message = if err.is_decode() {
+            "request timed out while reading response body"
+        } else {
+            "request timed out"
+        };
+
+        return LiteLLMError::Http {
+            message: message.into(),
+            source: Some(Box::new(err)),
+        };
+    }
+
+    LiteLLMError::Parse(err.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     #[test]
     fn retry_config_backoff_calculation() {
@@ -213,5 +227,56 @@ mod tests {
         assert!(!is_retryable_status(StatusCode::UNAUTHORIZED));
         assert!(!is_retryable_status(StatusCode::NOT_FOUND));
         assert!(!is_retryable_status(StatusCode::INTERNAL_SERVER_ERROR));
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct TestPayload {
+        #[serde(rename = "value")]
+        _value: String,
+    }
+
+    #[tokio::test]
+    async fn send_json_maps_body_read_timeouts_to_http_errors() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request_buf = [0_u8; 1024];
+            let _ = stream.read(&mut request_buf).await;
+
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 14\r\n\r\n",
+                )
+                .await
+                .unwrap();
+
+            sleep(Duration::from_millis(100)).await;
+            let _ = stream.write_all(br#"{"value":"ok"}"#).await;
+        });
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(50))
+            .build()
+            .unwrap();
+
+        let err = send_json_once::<TestPayload>(client.get(format!("http://{addr}/")))
+            .await
+            .unwrap_err();
+
+        match err {
+            LiteLLMError::Http { message, source } => {
+                assert!(
+                    message.contains("timed out"),
+                    "unexpected message: {message}"
+                );
+                assert!(
+                    source.is_some(),
+                    "timeout errors should retain the reqwest source"
+                );
+            }
+            other => panic!("expected http timeout error, got {other:?}"),
+        }
     }
 }
