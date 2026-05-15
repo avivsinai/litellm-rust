@@ -1,7 +1,7 @@
 use crate::config::ProviderConfig;
 use crate::error::{LiteLLMError, Result};
 use crate::http::send_json;
-use crate::providers::resolve_api_key;
+use crate::providers::{merge_extra_body, resolve_api_key};
 use crate::types::{
     ChatContentPart, ChatContentPartFile, ChatContentPartImageUrl, ChatContentPartInputAudio,
     ChatContentPartText, ChatFile, ChatImageUrl, ChatInputAudio, ChatMessage, ChatMessageContent,
@@ -67,6 +67,11 @@ pub async fn chat(client: &Client, cfg: &ProviderConfig, req: ChatRequest) -> Re
     if !generation_config.is_empty() {
         body["generationConfig"] = Value::Object(generation_config);
     }
+    merge_extra_body(
+        &mut body,
+        req.extra_body.as_ref(),
+        &["contents", "system_instruction", "generationConfig"],
+    )?;
 
     let mut builder = client.post(url).header("x-goog-api-key", key).json(&body);
     for (k, v) in &cfg.extra_headers {
@@ -86,6 +91,7 @@ pub async fn chat(client: &Client, cfg: &ProviderConfig, req: ChatRequest) -> Re
 
     Ok(ChatResponse {
         content,
+        reasoning: None,
         usage,
         response_id: None,
         header_cost: None,
@@ -226,10 +232,15 @@ pub async fn image_generation(
             model
         );
 
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "contents": [{ "parts": [{ "text": req.prompt }] }],
             "generationConfig": { "response_modalities": ["IMAGE", "TEXT"] }
         });
+        merge_extra_body(
+            &mut body,
+            req.extra_body.as_ref(),
+            &["contents", "generationConfig"],
+        )?;
 
         let mut builder = client.post(url).header("x-goog-api-key", &key).json(&body);
         for (k, v) in &cfg.extra_headers {
@@ -249,10 +260,15 @@ pub async fn image_generation(
         // Path B: Imagen models via predict endpoint
         let url = format!("{}/models/{}:predict", base.trim_end_matches('/'), model);
 
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "instances": [{ "prompt": req.prompt }],
             "parameters": { "sampleCount": n }
         });
+        merge_extra_body(
+            &mut body,
+            req.extra_body.as_ref(),
+            &["instances", "parameters"],
+        )?;
 
         let mut builder = client.post(url).header("x-goog-api-key", &key).json(&body);
         for (k, v) in &cfg.extra_headers {

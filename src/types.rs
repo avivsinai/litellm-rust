@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::borrow::Cow;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +118,11 @@ pub struct ChatRequest {
     pub metadata: Option<Value>,
     pub reasoning_effort: Option<Value>,
     pub thinking: Option<Value>,
+    /// Provider-specific JSON body fields forwarded at the top level.
+    ///
+    /// Values are sent raw to the upstream provider. Core request fields and
+    /// LiteLLM-internal-looking keys are rejected when the request is built.
+    pub extra_body: Option<Map<String, Value>>,
 }
 
 impl ChatRequest {
@@ -141,6 +146,7 @@ impl ChatRequest {
             metadata: None,
             reasoning_effort: None,
             thinking: None,
+            extra_body: None,
         }
     }
 
@@ -188,15 +194,78 @@ impl ChatRequest {
         self.response_format = Some(format);
         self
     }
+
+    pub fn extra_body(mut self, body: Map<String, Value>) -> Self {
+        self.extra_body = Some(body);
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatResponse {
     pub content: String,
+    /// Provider reasoning, kept separate from answer content.
+    pub reasoning: Option<Reasoning>,
     pub usage: Usage,
     pub response_id: Option<String>,
     pub header_cost: Option<f64>,
     pub raw: Option<Value>,
+}
+
+/// Provider reasoning details associated with a response.
+///
+/// The raw `details` payload is the canonical representation. Use `text()` for
+/// a best-effort textual view when providers expose text or summary entries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Reasoning {
+    pub details: Vec<Value>,
+}
+
+impl Reasoning {
+    /// Normalize provider text-only reasoning into the common detail shape.
+    pub fn from_text(text: impl Into<String>) -> Option<Self> {
+        let text = text.into();
+        if text.trim().is_empty() {
+            return None;
+        }
+        Some(Self {
+            details: vec![serde_json::json!({
+                "type": "reasoning.text",
+                "text": text,
+            })],
+        })
+    }
+
+    pub fn from_details(details: Vec<Value>) -> Option<Self> {
+        (!details.is_empty()).then_some(Self { details })
+    }
+
+    pub fn text(&self) -> Option<String> {
+        let mut out = String::new();
+        for detail in &self.details {
+            collect_reasoning_text(detail, &mut out);
+        }
+        (!out.trim().is_empty()).then_some(out)
+    }
+}
+
+fn collect_reasoning_text(value: &Value, out: &mut String) {
+    match value {
+        Value::String(text) => out.push_str(text),
+        Value::Array(items) => {
+            for item in items {
+                collect_reasoning_text(item, out);
+            }
+        }
+        Value::Object(map) => {
+            if let Some(text) = map.get("text") {
+                collect_reasoning_text(text, out);
+            } else if let Some(summary) = map.get("summary") {
+                collect_reasoning_text(summary, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Token usage statistics from an LLM API response.
@@ -216,6 +285,8 @@ pub struct Usage {
 pub struct EmbeddingRequest {
     pub model: String,
     pub input: Value,
+    /// Provider-specific JSON body fields forwarded at the top level.
+    pub extra_body: Option<Map<String, Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -233,6 +304,8 @@ pub struct ImageRequest {
     pub size: Option<String>,
     pub quality: Option<String>,
     pub background: Option<String>,
+    /// Provider-specific JSON body fields forwarded at the top level.
+    pub extra_body: Option<Map<String, Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
