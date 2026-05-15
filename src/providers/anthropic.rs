@@ -1,10 +1,10 @@
 use crate::config::ProviderConfig;
 use crate::error::{LiteLLMError, Result};
 use crate::http::send_json;
-use crate::providers::resolve_api_key;
+use crate::providers::{merge_extra_body, resolve_api_key};
 use crate::types::{
     ChatContentPart, ChatContentPartImageUrl, ChatContentPartText, ChatImageUrl, ChatMessage,
-    ChatMessageContent, ChatRequest, ChatResponse, Usage,
+    ChatMessageContent, ChatRequest, ChatResponse, Reasoning, Usage,
 };
 use base64::{engine::general_purpose, Engine as _};
 use mime_guess::MimeGuess;
@@ -42,11 +42,13 @@ pub async fn chat(client: &Client, cfg: &ProviderConfig, req: ChatRequest) -> Re
     }
 
     let (parsed, _headers) = send_json::<Value>(builder).await?;
-    let content = extract_text(&parsed);
+    validate_stop_reason(&parsed)?;
+    let (content, reasoning) = extract_text_and_reasoning(&parsed);
     let usage = parse_usage(&parsed);
 
     Ok(ChatResponse {
         content,
+        reasoning,
         usage,
         response_id: parsed
             .get("id")
@@ -105,8 +107,6 @@ pub async fn chat_stream(
     ))
 }
 
-const RESPONSE_FORMAT_TOOL_NAME: &str = "response_format";
-
 /// Build the Anthropic request body from a ChatRequest.
 fn build_anthropic_body(
     req: &ChatRequest,
@@ -140,26 +140,16 @@ fn build_anthropic_body(
         body["stop_sequences"] = serde_json::json!(stop_sequences);
     }
 
-    let mut tools = req.tools.clone();
-    let mut tool_choice = req.tool_choice.clone();
-    let output_format =
-        map_response_format_to_output_format(&req.model, req.response_format.as_ref());
-    if let Some(output_format) = output_format {
-        body["output_format"] = output_format;
-    } else if let Some(response_tool) = map_response_format_to_tool(req.response_format.as_ref()) {
-        tools = merge_tools(tools, response_tool);
-        if tool_choice.is_none() {
-            tool_choice = Some(serde_json::json!({
-                "type": "tool",
-                "name": RESPONSE_FORMAT_TOOL_NAME,
-            }));
-        }
+    if let Some(output_config) =
+        map_response_format_to_output_config(&req.model, req.response_format.as_ref())?
+    {
+        body["output_config"] = output_config;
     }
 
-    if let Some(tools_value) = tools {
+    if let Some(tools_value) = req.tools.clone() {
         body["tools"] = tools_value;
     }
-    if let Some(tool_choice_value) = tool_choice {
+    if let Some(tool_choice_value) = req.tool_choice.clone() {
         body["tool_choice"] = tool_choice_value;
     }
 
@@ -168,6 +158,25 @@ fn build_anthropic_body(
     } else if let Some(ref user) = req.user {
         body["metadata"] = serde_json::json!({ "user_id": user });
     }
+
+    merge_extra_body(
+        &mut body,
+        req.extra_body.as_ref(),
+        &[
+            "model",
+            "messages",
+            "max_tokens",
+            "stream",
+            "system",
+            "temperature",
+            "top_p",
+            "stop_sequences",
+            "output_config",
+            "tools",
+            "tool_choice",
+            "metadata",
+        ],
+    )?;
 
     Ok(body)
 }
@@ -201,87 +210,115 @@ fn map_stop_sequences(value: Option<Value>) -> Option<Vec<String>> {
     }
 }
 
-fn map_response_format_to_output_format(model: &str, value: Option<&Value>) -> Option<Value> {
-    let value = value?;
-    let type_value = value.get("type")?.as_str()?;
+fn map_response_format_to_output_config(
+    model: &str,
+    value: Option<&Value>,
+) -> Result<Option<Value>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let Some(type_value) = value.get("type").and_then(|v| v.as_str()) else {
+        return Ok(None);
+    };
     if type_value == "text" {
-        return None;
+        return Ok(None);
     }
-    if !model_supports_output_format(model) {
-        return None;
+    if !model_supports_output_config(model) {
+        return Err(LiteLLMError::Unsupported(format!(
+            "anthropic response_format requires a Claude structured-output model; unsupported model `{model}`"
+        )));
     }
     let schema = extract_json_schema(value)?;
-    Some(serde_json::json!({
-        "type": "json_schema",
-        "schema": schema,
-    }))
+    Ok(Some(serde_json::json!({
+        "format": {
+            "type": "json_schema",
+            "schema": schema,
+        }
+    })))
 }
 
-fn map_response_format_to_tool(value: Option<&Value>) -> Option<Value> {
-    let value = value?;
-    let type_value = value.get("type")?.as_str()?;
-    if type_value == "text" {
-        return None;
-    }
-    let schema = extract_json_schema(value)?;
-    Some(serde_json::json!({
-        "name": RESPONSE_FORMAT_TOOL_NAME,
-        "input_schema": schema,
-    }))
-}
-
-fn extract_json_schema(value: &Value) -> Option<Value> {
-    if let Some(schema) = value.get("response_schema") {
-        return Some(schema.clone());
-    }
-    if let Some(schema) = value.get("json_schema").and_then(|v| v.get("schema")) {
-        return Some(schema.clone());
-    }
-    if value.get("type").and_then(|v| v.as_str()) == Some("json_object") {
-        return Some(serde_json::json!({
+fn extract_json_schema(value: &Value) -> Result<Value> {
+    match value.get("type").and_then(|v| v.as_str()) {
+        Some("json_schema") => value
+            .get("json_schema")
+            .and_then(|v| v.get("schema"))
+            .cloned()
+            .ok_or_else(|| {
+                LiteLLMError::Config(
+                    "anthropic response_format json_schema requires json_schema.schema".into(),
+                )
+            }),
+        Some("json_object") => Ok(serde_json::json!({
             "type": "object",
             "properties": {},
             "additionalProperties": true,
-        }));
+        })),
+        Some(other) => Err(LiteLLMError::Config(format!(
+            "unsupported anthropic response_format type `{other}`"
+        ))),
+        None => Err(LiteLLMError::Config(
+            "anthropic response_format requires a type".into(),
+        )),
     }
-    None
 }
 
-fn model_supports_output_format(model: &str) -> bool {
+fn model_supports_output_config(model: &str) -> bool {
     let lower = model.to_lowercase();
     lower.contains("sonnet-4.5")
         || lower.contains("sonnet-4-5")
-        || lower.contains("opus-4.1")
-        || lower.contains("opus-4-1")
+        || lower.contains("sonnet-4.6")
+        || lower.contains("sonnet-4-6")
+        || lower.contains("haiku-4.5")
+        || lower.contains("haiku-4-5")
+        || lower.contains("opus-4.5")
+        || lower.contains("opus-4-5")
+        || lower.contains("opus-4.6")
+        || lower.contains("opus-4-6")
+        || lower.contains("opus-4.7")
+        || lower.contains("opus-4-7")
+        || lower.contains("mythos")
 }
 
-fn merge_tools(tools: Option<Value>, new_tool: Value) -> Option<Value> {
-    match tools {
-        None => Some(Value::Array(vec![new_tool])),
-        Some(Value::Array(mut arr)) => {
-            arr.push(new_tool);
-            Some(Value::Array(arr))
-        }
-        Some(other) => Some(Value::Array(vec![other, new_tool])),
-    }
-}
-
-fn extract_text(resp: &Value) -> String {
+fn extract_text_and_reasoning(resp: &Value) -> (String, Option<Reasoning>) {
     if let Some(content) = resp.get("content").and_then(|v| v.as_array()) {
         let mut out = String::new();
+        let mut reasoning_details = Vec::new();
         for part in content {
             if part.get("type").and_then(|v| v.as_str()) == Some("text") {
                 if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
                     out.push_str(text);
                 }
+            } else if part.get("type").and_then(|v| v.as_str()) == Some("thinking") {
+                reasoning_details.push(part.clone());
             }
         }
-        return out;
+        return (out, Reasoning::from_details(reasoning_details));
     }
-    resp.get("completion")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string()
+    (
+        resp.get("completion")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        None,
+    )
+}
+
+fn extract_text(resp: &Value) -> String {
+    extract_text_and_reasoning(resp).0
+}
+
+fn validate_stop_reason(resp: &Value) -> Result<()> {
+    match resp.get("stop_reason").and_then(|v| v.as_str()) {
+        Some("refusal") => Err(LiteLLMError::Refusal {
+            text: extract_text(resp),
+            usage: parse_usage(resp),
+        }),
+        Some("max_tokens") => Err(LiteLLMError::Truncated {
+            text: extract_text(resp),
+            usage: parse_usage(resp),
+        }),
+        _ => Ok(()),
+    }
 }
 
 fn parse_usage(resp: &Value) -> Usage {

@@ -1,11 +1,11 @@
 use crate::config::ProviderConfig;
 use crate::error::{LiteLLMError, Result};
 use crate::http::send_json;
-use crate::providers::resolve_api_key;
+use crate::providers::{merge_extra_body, resolve_api_key};
 use crate::stream::{parse_sse_stream, ChatStream};
 use crate::types::{
     ChatRequest, ChatResponse, EmbeddingRequest, EmbeddingResponse, ImageData, ImageRequest,
-    ImageResponse, Usage, VideoRequest, VideoResponse,
+    ImageResponse, Reasoning, Usage, VideoRequest, VideoResponse,
 };
 use base64::{engine::general_purpose, Engine as _};
 use reqwest::multipart::Form;
@@ -35,6 +35,7 @@ struct OpenAIChoice {
 #[derive(Debug, Deserialize)]
 struct OpenAIMessage {
     content: Option<Value>,
+    reasoning_content: Option<String>,
     reasoning: Option<String>,
     reasoning_details: Option<Value>,
 }
@@ -67,7 +68,7 @@ struct OpenAIEmbeddingItem {
 /// Build the chat request body from a ChatRequest.
 ///
 /// This is shared between streaming and non-streaming chat calls.
-fn build_chat_body(req: &ChatRequest, stream: bool) -> Value {
+fn build_chat_body(req: &ChatRequest, stream: bool) -> Result<Value> {
     let mut body = serde_json::json!({
         "model": req.model,
         "messages": req.messages,
@@ -126,7 +127,33 @@ fn build_chat_body(req: &ChatRequest, stream: bool) -> Value {
         body["thinking"] = thinking.clone();
     }
 
-    body
+    merge_extra_body(
+        &mut body,
+        req.extra_body.as_ref(),
+        &[
+            "model",
+            "messages",
+            "stream",
+            "temperature",
+            "max_tokens",
+            "response_format",
+            "max_completion_tokens",
+            "tools",
+            "tool_choice",
+            "parallel_tool_calls",
+            "stop",
+            "top_p",
+            "presence_penalty",
+            "frequency_penalty",
+            "seed",
+            "user",
+            "metadata",
+            "reasoning_effort",
+            "thinking",
+        ],
+    )?;
+
+    Ok(body)
 }
 
 pub async fn chat(client: &Client, cfg: &ProviderConfig, req: ChatRequest) -> Result<ChatResponse> {
@@ -137,7 +164,7 @@ pub async fn chat(client: &Client, cfg: &ProviderConfig, req: ChatRequest) -> Re
     let url = format!("{}/chat/completions", base.trim_end_matches('/'));
     let key = resolve_api_key(cfg)?;
 
-    let body = build_chat_body(&req, false);
+    let body = build_chat_body(&req, false)?;
 
     let mut builder = client.post(url).json(&body);
     if let Some(key) = key {
@@ -148,11 +175,11 @@ pub async fn chat(client: &Client, cfg: &ProviderConfig, req: ChatRequest) -> Re
     }
 
     let (parsed, headers) = send_json::<OpenAIChatResponse>(builder).await?;
-    let content = parsed
-        .choices
-        .first()
-        .map(|c| extract_message_text(&c.message))
+    let first_message = parsed.choices.first().map(|c| &c.message);
+    let content = first_message
+        .and_then(|message| extract_text_value(message.content.as_ref()))
         .unwrap_or_default();
+    let reasoning = first_message.and_then(extract_reasoning);
     let header_cost = headers
         .get("x-litellm-response-cost")
         .and_then(|v| v.to_str().ok())
@@ -164,6 +191,7 @@ pub async fn chat(client: &Client, cfg: &ProviderConfig, req: ChatRequest) -> Re
 
     Ok(ChatResponse {
         content,
+        reasoning,
         usage,
         response_id: parsed.id,
         header_cost,
@@ -171,17 +199,20 @@ pub async fn chat(client: &Client, cfg: &ProviderConfig, req: ChatRequest) -> Re
     })
 }
 
-fn extract_message_text(message: &OpenAIMessage) -> String {
-    extract_text_value(message.content.as_ref())
+fn extract_reasoning(message: &OpenAIMessage) -> Option<Reasoning> {
+    message
+        .reasoning_details
+        .as_ref()
+        .and_then(|details| details.as_array().cloned())
+        .and_then(Reasoning::from_details)
         .or_else(|| {
             message
-                .reasoning
+                .reasoning_content
                 .as_ref()
-                .filter(|text| !text.trim().is_empty())
+                .or(message.reasoning.as_ref())
                 .cloned()
+                .and_then(Reasoning::from_text)
         })
-        .or_else(|| extract_text_value(message.reasoning_details.as_ref()))
-        .unwrap_or_default()
 }
 
 fn extract_text_value(value: Option<&Value>) -> Option<String> {
@@ -223,7 +254,7 @@ pub async fn chat_stream(
     let url = format!("{}/chat/completions", base.trim_end_matches('/'));
     let key = resolve_api_key(cfg)?;
 
-    let body = build_chat_body(&req, true);
+    let body = build_chat_body(&req, true)?;
 
     let mut builder = client.post(url).json(&body);
     if let Some(key) = key {
@@ -259,10 +290,11 @@ pub async fn embeddings(
     let url = format!("{}/embeddings", base.trim_end_matches('/'));
     let key = resolve_api_key(cfg)?;
 
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "model": req.model,
         "input": req.input,
     });
+    merge_extra_body(&mut body, req.extra_body.as_ref(), &["model", "input"])?;
 
     let mut builder = client.post(url).json(&body);
     if let Some(key) = key {
@@ -310,6 +342,7 @@ pub async fn image_generation(
     if let Some(ref background) = req.background {
         body["background"] = serde_json::json!(background);
     }
+    merge_extra_body(&mut body, req.extra_body.as_ref(), &["model", "prompt"])?;
 
     let mut builder = client.post(url).json(&body);
     if let Some(key) = key {

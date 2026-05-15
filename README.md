@@ -71,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
         .embedding(EmbeddingRequest {
             model: "openai/text-embedding-3-small".to_string(),
             input: serde_json::json!("hello"),
+            extra_body: None,
         })
         .await?;
     println!("{} vectors", embed.vectors.len());
@@ -83,6 +84,7 @@ async fn main() -> anyhow::Result<()> {
             size: None,
             quality: None,
             background: None,
+            extra_body: None,
         })
         .await?;
     println!("{} images", images.images.len());

@@ -7,11 +7,12 @@
 //! - Configuration validation
 
 use litellm_rust::config::ProviderConfig;
+use litellm_rust::error::LiteLLMError;
 use litellm_rust::providers::{anthropic, gemini, openai_compat};
 use litellm_rust::types::{ChatMessage, ChatMessageContent, ChatRequest};
 use reqwest::Client;
-use serde_json::json;
-use wiremock::matchers::{header, method, path};
+use serde_json::{json, Map, Value};
+use wiremock::matchers::{body_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn make_client() -> Client {
@@ -20,6 +21,10 @@ fn make_client() -> Client {
 
 fn simple_chat_request(model: &str) -> ChatRequest {
     ChatRequest::new(model).message("user", "Hello")
+}
+
+fn json_object(value: Value) -> Map<String, Value> {
+    value.as_object().expect("expected JSON object").clone()
 }
 
 fn chat_message(role: &str, content: &str) -> ChatMessage {
@@ -344,6 +349,158 @@ mod openai_compat_tests {
         assert_eq!(resp.content, "response");
     }
 
+    /// Verifies current and future OpenAI-compatible params can be passed without
+    /// adding a new Rust field for every upstream LiteLLM parameter.
+    #[tokio::test]
+    async fn chat_completion_merges_extra_body_without_overriding_core_fields() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(body_json(json!({
+                "model": "gpt-4",
+                "messages": [{ "role": "user", "content": "Hello" }],
+                "web_search_options": {},
+                "service_tier": "flex",
+                "cache_prompt": false,
+                "top_logprobs": 3,
+                "provider_options": { "reasoning": { "enabled": true } },
+                "modalities": ["text"]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "chatcmpl-extra",
+                "choices": [{ "message": { "content": "response" } }],
+                "usage": {}
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = ChatRequest::new("gpt-4")
+            .message("user", "Hello")
+            .extra_body(json_object(json!({
+                "web_search_options": {},
+                "service_tier": "flex",
+                "cache_prompt": false,
+                "top_logprobs": 3,
+                "provider_options": { "reasoning": { "enabled": true } },
+                "modalities": ["text"]
+            })));
+
+        let resp = openai_compat::chat(&make_client(), &cfg, req)
+            .await
+            .unwrap();
+        assert_eq!(resp.content, "response");
+    }
+
+    #[tokio::test]
+    async fn chat_completion_rejects_extra_body_core_field_override() {
+        let cfg = ProviderConfig {
+            base_url: Some("http://127.0.0.1:9".to_string()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = ChatRequest::new("gpt-4")
+            .message("user", "Hello")
+            .extra_body(json_object(json!({ "model": "other-model" })));
+
+        let err = openai_compat::chat(&make_client(), &cfg, req)
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("protected request field `model`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_completion_rejects_extra_body_internal_keys() {
+        let cfg = ProviderConfig {
+            base_url: Some("http://127.0.0.1:9".to_string()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = ChatRequest::new("gpt-4")
+            .message("user", "Hello")
+            .extra_body(json_object(json!({ "vector_store_ids": ["vs_123"] })));
+
+        let err = openai_compat::chat(&make_client(), &cfg, req)
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("unsupported internal field"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_completion_rejects_extra_body_response_reasoning_keys() {
+        let cfg = ProviderConfig {
+            base_url: Some("http://127.0.0.1:9".to_string()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = ChatRequest::new("deepseek-reasoner")
+            .message("user", "Hello")
+            .extra_body(json_object(
+                json!({ "reasoning_content": "copied response" }),
+            ));
+
+        let err = openai_compat::chat(&make_client(), &cfg, req)
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("unsupported internal field `reasoning_content`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_completion_omits_empty_extra_body() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(body_json(json!({
+                "model": "gpt-4",
+                "messages": [{ "role": "user", "content": "Hello" }]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "chatcmpl-empty-extra",
+                "choices": [{ "message": { "content": "response" } }],
+                "usage": {}
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = ChatRequest::new("gpt-4")
+            .message("user", "Hello")
+            .extra_body(json_object(json!({})));
+
+        let resp = openai_compat::chat(&make_client(), &cfg, req)
+            .await
+            .unwrap();
+        assert_eq!(resp.content, "response");
+    }
+
     /// Verifies response with null content field is handled gracefully.
     #[tokio::test]
     async fn chat_completion_handles_null_content() {
@@ -416,9 +573,9 @@ mod openai_compat_tests {
         assert_eq!(resp.content, "Hello from array parts");
     }
 
-    /// Verifies reasoning is used when content is empty.
+    /// Verifies reasoning is kept separate from answer content.
     #[tokio::test]
-    async fn chat_completion_falls_back_to_reasoning() {
+    async fn chat_completion_preserves_reasoning_separately() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))
@@ -448,12 +605,17 @@ mod openai_compat_tests {
             .await
             .unwrap();
 
-        assert_eq!(resp.content, "Reasoning fallback text");
+        assert_eq!(resp.content, "");
+        let reasoning = resp.reasoning.unwrap();
+        assert_eq!(
+            reasoning.text(),
+            Some("Reasoning fallback text".to_string())
+        );
     }
 
-    /// Verifies reasoning_details text is used when both content and reasoning are empty.
+    /// Verifies reasoning_details are preserved raw instead of becoming content.
     #[tokio::test]
-    async fn chat_completion_falls_back_to_reasoning_details() {
+    async fn chat_completion_preserves_reasoning_details() {
         let mock_server = MockServer::start().await;
 
         Mock::given(method("POST"))
@@ -486,7 +648,85 @@ mod openai_compat_tests {
             .await
             .unwrap();
 
-        assert_eq!(resp.content, "Reasoning details fallback");
+        assert_eq!(resp.content, "");
+        let details = resp.reasoning.unwrap().details;
+        assert_eq!(details.len(), 2);
+        assert_eq!(details[0]["text"], "Reasoning ");
+        assert_eq!(details[1]["text"], "details fallback");
+    }
+
+    #[tokio::test]
+    async fn chat_completion_round_trip_omits_reasoning_from_next_request() {
+        let first_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "chatcmpl-reasoning-roundtrip",
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "final answer",
+                        "reasoning_content": "hidden chain"
+                    }
+                }],
+                "usage": {}
+            })))
+            .mount(&first_server)
+            .await;
+
+        let first_cfg = ProviderConfig {
+            base_url: Some(first_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let resp = openai_compat::chat(
+            &make_client(),
+            &first_cfg,
+            simple_chat_request("deepseek-reasoner"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.content, "final answer");
+        assert_eq!(
+            resp.reasoning.and_then(|reasoning| reasoning.text()),
+            Some("hidden chain".to_string())
+        );
+
+        let second_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(body_json(json!({
+                "model": "deepseek-reasoner",
+                "messages": [
+                    { "role": "user", "content": "Hello" },
+                    { "role": "assistant", "content": "final answer" },
+                    { "role": "user", "content": "continue" }
+                ]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "chatcmpl-next",
+                "choices": [{ "message": { "content": "next" } }],
+                "usage": {}
+            })))
+            .mount(&second_server)
+            .await;
+
+        let second_cfg = ProviderConfig {
+            base_url: Some(second_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let next_req = ChatRequest::new("deepseek-reasoner")
+            .message("user", "Hello")
+            .message("assistant", resp.content)
+            .message("user", "continue");
+        let next_resp = openai_compat::chat(&make_client(), &second_cfg, next_req)
+            .await
+            .unwrap();
+        assert_eq!(next_resp.content, "next");
     }
 }
 
@@ -537,6 +777,47 @@ mod anthropic_tests {
         assert_eq!(resp.response_id, Some("msg_123".to_string()));
     }
 
+    #[tokio::test]
+    async fn chat_completion_extracts_anthropic_thinking_blocks_as_reasoning() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_thinking",
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "private reasoning",
+                        "signature": "sig_123"
+                    },
+                    { "type": "text", "text": "visible answer" }
+                ],
+                "usage": {
+                    "input_tokens": 11,
+                    "output_tokens": 9
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = simple_chat_request("claude-sonnet-4.5");
+        let resp = anthropic::chat(&make_client(), &cfg, req).await.unwrap();
+
+        assert_eq!(resp.content, "visible answer");
+        let details = resp.reasoning.unwrap().details;
+        assert_eq!(details.len(), 1);
+        assert_eq!(details[0]["type"], "thinking");
+        assert_eq!(details[0]["thinking"], "private reasoning");
+        assert_eq!(details[0]["signature"], "sig_123");
+    }
+
     /// Verifies system messages are extracted and sent separately.
     #[tokio::test]
     async fn chat_completion_handles_system_messages() {
@@ -580,6 +861,7 @@ mod anthropic_tests {
             metadata: None,
             reasoning_effort: None,
             thinking: None,
+            extra_body: None,
         };
 
         let resp = anthropic::chat(&make_client(), &cfg, req).await.unwrap();
@@ -677,6 +959,7 @@ mod anthropic_tests {
             metadata: None,
             reasoning_effort: None,
             thinking: None,
+            extra_body: None,
         };
 
         let err = anthropic::chat(&make_client(), &cfg, req)
@@ -719,6 +1002,186 @@ mod anthropic_tests {
 
         // No text blocks, so content should be empty
         assert_eq!(resp.content, "");
+    }
+
+    /// Verifies Anthropic response_format uses the current native
+    /// output_config.format API shape for structured-output models.
+    #[tokio::test]
+    async fn chat_completion_maps_response_format_to_native_output_config() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(body_json(json!({
+                "model": "claude-sonnet-4.5",
+                "messages": [{ "role": "user", "content": [{ "type": "text", "text": "Return JSON" }] }],
+                "max_tokens": 1024,
+                "output_config": {
+                    "format": {
+                        "type": "json_schema",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "answer": { "type": "string" },
+                                "count": { "type": "integer" }
+                            },
+                            "required": ["answer", "count"]
+                        }
+                    }
+                }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_json",
+                "content": [{ "type": "text", "text": "{\"answer\":\"ok\",\"count\":1}" }],
+                "usage": { "input_tokens": 10, "output_tokens": 5 }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = ChatRequest::new("claude-sonnet-4.5")
+            .message("user", "Return JSON")
+            .response_format(json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "answer": { "type": "string" },
+                            "count": { "type": "integer" }
+                        },
+                        "required": ["answer", "count"]
+                    }
+                }
+            }));
+
+        let resp = anthropic::chat(&make_client(), &cfg, req).await.unwrap();
+        assert_eq!(resp.content, r#"{"answer":"ok","count":1}"#);
+    }
+
+    #[tokio::test]
+    async fn chat_completion_rejects_response_format_for_unsupported_anthropic_model() {
+        let cfg = ProviderConfig {
+            base_url: Some("http://127.0.0.1:9".to_string()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = ChatRequest::new("claude-3-5-sonnet-20241022")
+            .message("user", "Return JSON")
+            .response_format(json!({ "type": "json_object" }));
+
+        let err = anthropic::chat(&make_client(), &cfg, req)
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("structured-output model"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_completion_rejects_malformed_anthropic_json_schema_response_format() {
+        let cfg = ProviderConfig {
+            base_url: Some("http://127.0.0.1:9".to_string()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = ChatRequest::new("claude-sonnet-4.5")
+            .message("user", "Return JSON")
+            .response_format(json!({ "type": "json_schema", "json_schema": {} }));
+
+        let err = anthropic::chat(&make_client(), &cfg, req)
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("json_schema.schema"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_completion_returns_refusal_error_for_anthropic_refusal_stop_reason() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_refusal",
+                "stop_reason": "refusal",
+                "content": [{ "type": "text", "text": "{\"answer\":\"unsafe\"}" }],
+                "usage": { "input_tokens": 10, "output_tokens": 5 }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = ChatRequest::new("claude-sonnet-4.5")
+            .message("user", "Return JSON")
+            .response_format(json!({ "type": "json_object" }));
+        let err = anthropic::chat(&make_client(), &cfg, req)
+            .await
+            .unwrap_err();
+
+        match err {
+            LiteLLMError::Refusal { text, usage } => {
+                assert_eq!(text, r#"{"answer":"unsafe"}"#);
+                assert_eq!(usage.prompt_tokens, Some(10));
+                assert_eq!(usage.completion_tokens, Some(5));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_completion_returns_truncated_error_for_anthropic_max_tokens_stop_reason() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_truncated",
+                "stop_reason": "max_tokens",
+                "content": [{ "type": "text", "text": "{\"answer\":\"partial" }],
+                "usage": { "input_tokens": 10, "output_tokens": 5 }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = ChatRequest::new("claude-sonnet-4.5")
+            .message("user", "Return JSON")
+            .response_format(json!({ "type": "json_object" }));
+        let err = anthropic::chat(&make_client(), &cfg, req)
+            .await
+            .unwrap_err();
+
+        match err {
+            LiteLLMError::Truncated { text, usage } => {
+                assert_eq!(text, r#"{"answer":"partial"#);
+                assert_eq!(usage.prompt_tokens, Some(10));
+                assert_eq!(usage.completion_tokens, Some(5));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
     }
 
     /// Verifies overloaded (503) error is surfaced correctly.
@@ -795,6 +1258,7 @@ mod embedding_tests {
         let req = EmbeddingRequest {
             model: "text-embedding-ada-002".to_string(),
             input: json!(["Hello", "World"]),
+            extra_body: None,
         };
 
         let resp = openai_compat::embeddings(&make_client(), &cfg, req)
@@ -830,6 +1294,7 @@ mod embedding_tests {
         let req = EmbeddingRequest {
             model: "text-embedding-ada-002".to_string(),
             input: json!("Single input text"),
+            extra_body: None,
         };
 
         let resp = openai_compat::embeddings(&make_client(), &cfg, req)
@@ -883,6 +1348,7 @@ mod image_generation_tests {
             size: Some("1024x1024".to_string()),
             quality: None,
             background: None,
+            extra_body: None,
         };
 
         let resp = openai_compat::image_generation(&make_client(), &cfg, req)
@@ -927,6 +1393,7 @@ mod image_generation_tests {
             size: None,
             quality: None,
             background: None,
+            extra_body: None,
         };
 
         let resp = openai_compat::image_generation(&make_client(), &cfg, req)
@@ -994,6 +1461,7 @@ mod gemini_image_generation_tests {
             size: None,
             quality: None,
             background: None,
+            extra_body: None,
         };
 
         let resp = gemini::image_generation(&make_client(), &cfg, req)
@@ -1040,6 +1508,7 @@ mod gemini_image_generation_tests {
             size: None,
             quality: None,
             background: None,
+            extra_body: None,
         };
 
         let resp = gemini::image_generation(&make_client(), &cfg, req)

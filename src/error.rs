@@ -1,3 +1,4 @@
+use crate::types::Usage;
 use std::error::Error as StdError;
 use thiserror::Error;
 
@@ -17,6 +18,10 @@ pub enum LiteLLMError {
     },
     #[error("parse error: {0}")]
     Parse(String),
+    #[error("provider refusal: {text}")]
+    Refusal { text: String, usage: Usage },
+    #[error("provider response truncated: {text}")]
+    Truncated { text: String, usage: Usage },
     #[error("unsupported operation: {0}")]
     Unsupported(String),
 }

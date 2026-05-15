@@ -1,6 +1,6 @@
 use crate::error::{LiteLLMError, Result};
 use crate::http::MAX_SSE_BUFFER_SIZE;
-use crate::types::Usage;
+use crate::types::{Reasoning, Usage};
 use bytes::Bytes;
 use futures_util::stream::{Stream, StreamExt, TryStreamExt};
 use serde_json::Value;
@@ -10,7 +10,10 @@ use tokio_util::io::StreamReader;
 
 #[derive(Debug, Clone)]
 pub struct ChatStreamChunk {
+    /// User-visible answer text for this chunk.
     pub content: String,
+    /// Provider reasoning, kept separate from answer content.
+    pub reasoning: Option<Reasoning>,
     pub raw: Option<Value>,
     pub usage: Option<Usage>,
 }
@@ -110,10 +113,27 @@ where
             let content = value
                 .pointer("/choices/0/delta/content")
                 .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+                .map(|s| s.to_string());
+            let reasoning_text = value
+                .pointer("/choices/0/delta/reasoning_content")
+                .and_then(|v| v.as_str())
+                .or_else(|| {
+                    value
+                        .pointer("/choices/0/delta/reasoning")
+                        .and_then(|v| v.as_str())
+                })
+                .map(|s| s.to_string());
+            let reasoning_details = value
+                .pointer("/choices/0/delta/reasoning_details")
+                .and_then(|v| v.as_array())
+                .cloned();
+            let reasoning = reasoning_details
+                .and_then(Reasoning::from_details)
+                .or_else(|| reasoning_text.and_then(Reasoning::from_text));
+            let content = content.unwrap_or_default();
             yield ChatStreamChunk {
                 content,
+                reasoning,
                 raw: Some(value),
                 usage,
             };
@@ -142,14 +162,20 @@ where
                 .map_err(|e| LiteLLMError::Parse(e.to_string()))?;
             let usage = parse_usage(&value);
             if event.event.as_deref() == Some("content_block_delta") {
-                let content = value
+                let text = value
                     .pointer("/delta/text")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if !content.is_empty() {
+                    .map(|s| s.to_string());
+                let reasoning = value
+                    .pointer("/delta/thinking")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .and_then(Reasoning::from_text);
+                let content = text.unwrap_or_default();
+                if !content.is_empty() || reasoning.is_some() {
                     yield ChatStreamChunk {
                         content,
+                        reasoning,
                         raw: Some(value),
                         usage,
                     };
