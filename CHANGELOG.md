@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Surface model-requested tool calls on `ChatResponse.tool_calls` in OpenAI shape — an array of `{ id, type: "function", function: { name, arguments } }` where `arguments` is the raw JSON string the model produced. OpenAI-compatible providers pass the field through unchanged; Anthropic `tool_use` content blocks and Gemini `functionCall` parts are normalized to the same shape so consumers can use a single dispatch path. Empty / missing arrays become `None`.
+
 ## [0.2.0] - 2026-05-15
 
 ### Breaking Changes

@@ -46,9 +46,11 @@ pub async fn chat(client: &Client, cfg: &ProviderConfig, req: ChatRequest) -> Re
     let (content, reasoning) = extract_text_and_reasoning(&parsed);
     let usage = parse_usage(&parsed);
 
+    let tool_calls = extract_anthropic_tool_calls(&parsed);
     Ok(ChatResponse {
         content,
         reasoning,
+        tool_calls,
         usage,
         response_id: parsed
             .get("id")
@@ -57,6 +59,29 @@ pub async fn chat(client: &Client, cfg: &ProviderConfig, req: ChatRequest) -> Re
         header_cost: None,
         raw: None,
     })
+}
+
+/// Map Anthropic content blocks of type `tool_use` to the OpenAI tool_calls shape.
+/// Anthropic returns `{type: "tool_use", id, name, input}` per call; OpenAI uses
+/// `{id, type: "function", function: { name, arguments: <json string> }}`.
+fn extract_anthropic_tool_calls(parsed: &Value) -> Option<Value> {
+    let blocks = parsed.get("content")?.as_array()?;
+    let mut calls: Vec<Value> = Vec::new();
+    for b in blocks {
+        if b.get("type").and_then(|v| v.as_str()) != Some("tool_use") {
+            continue;
+        }
+        let id = b.get("id").cloned().unwrap_or(Value::Null);
+        let name = b.get("name").cloned().unwrap_or(Value::Null);
+        let input = b.get("input").cloned().unwrap_or(Value::Object(Default::default()));
+        let arguments = serde_json::to_string(&input).unwrap_or_else(|_| "{}".into());
+        calls.push(serde_json::json!({
+            "id": id,
+            "type": "function",
+            "function": { "name": name, "arguments": arguments },
+        }));
+    }
+    if calls.is_empty() { None } else { Some(Value::Array(calls)) }
 }
 
 pub async fn chat_stream(
