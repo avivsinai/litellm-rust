@@ -181,7 +181,10 @@ mod openai_compat_tests {
         let resp = openai_compat::chat(&make_client(), &cfg, simple_chat_request("gpt-4"))
             .await
             .unwrap();
-        assert!(resp.tool_calls.is_none(), "empty array should be treated as None");
+        assert!(
+            resp.tool_calls.is_none(),
+            "empty array should be treated as None"
+        );
     }
 
     /// Verifies reasoning_tokens extraction from completion_tokens_details.
@@ -1538,6 +1541,106 @@ mod image_generation_tests {
             .unwrap();
 
         assert!(resp.images.is_empty());
+    }
+}
+
+// =============================================================================
+// Gemini Chat (tool calling) Tests
+// =============================================================================
+
+mod gemini_chat_tests {
+    use super::*;
+
+    /// Gemini `functionCall` parts map to OpenAI-shape tool_calls so consumers
+    /// can use a single dispatch path across providers. Gemini supplies no call
+    /// ids, so they are synthesized as `call_<part_idx>` — note the text part at
+    /// index 0 means the first (and only) call here is `call_1`, not `call_0`.
+    #[tokio::test]
+    async fn chat_completion_maps_gemini_function_call_to_openai_tool_calls() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/models/gemini-2.5-flash:generateContent"))
+            .and(header("x-goog-api-key", "test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{
+                    "content": {
+                        "parts": [
+                            { "text": "I'll scan that for you." },
+                            {
+                                "functionCall": {
+                                    "name": "run_task",
+                                    "args": { "name": "nmap", "targets": ["example.com"] }
+                                }
+                            }
+                        ]
+                    }
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 5,
+                    "candidatesTokenCount": 5,
+                    "totalTokenCount": 10
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+        let resp = gemini::chat(
+            &make_client(),
+            &cfg,
+            simple_chat_request("gemini-2.5-flash"),
+        )
+        .await
+        .unwrap();
+        let calls = resp.tool_calls.expect("tool_calls populated");
+        let arr = calls.as_array().expect("array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["type"], "function");
+        // Part 0 is text, part 1 is the functionCall -> synthesized id `call_1`.
+        assert_eq!(arr[0]["id"], "call_1");
+        assert_eq!(arr[0]["function"]["name"], "run_task");
+        // arguments is a JSON string (OpenAI convention) — parse it.
+        let args: serde_json::Value =
+            serde_json::from_str(arr[0]["function"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(args["name"], "nmap");
+        assert_eq!(args["targets"][0], "example.com");
+    }
+
+    /// A Gemini response with no `functionCall` parts leaves `tool_calls` as None.
+    #[tokio::test]
+    async fn chat_completion_omits_gemini_tool_calls_when_absent() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/models/gemini-2.5-flash:generateContent"))
+            .and(header("x-goog-api-key", "test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{
+                    "content": { "parts": [ { "text": "just text, no calls" } ] }
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 3,
+                    "candidatesTokenCount": 3,
+                    "totalTokenCount": 6
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+        let resp = gemini::chat(
+            &make_client(),
+            &cfg,
+            simple_chat_request("gemini-2.5-flash"),
+        )
+        .await
+        .unwrap();
+        assert!(resp.tool_calls.is_none());
     }
 }
 
