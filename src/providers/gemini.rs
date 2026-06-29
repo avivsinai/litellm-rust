@@ -116,9 +116,14 @@ fn extract_gemini_tool_calls(resp: &serde_json::Value) -> Option<serde_json::Val
         .as_array()?;
     let mut calls: Vec<serde_json::Value> = Vec::new();
     for (idx, part) in parts.iter().enumerate() {
-        let Some(fc) = part.get("functionCall") else { continue };
+        let Some(fc) = part.get("functionCall") else {
+            continue;
+        };
         let name = fc.get("name").cloned().unwrap_or(serde_json::Value::Null);
-        let args = fc.get("args").cloned().unwrap_or_else(|| serde_json::json!({}));
+        let args = fc
+            .get("args")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
         let arguments = serde_json::to_string(&args).unwrap_or_else(|_| "{}".into());
         calls.push(serde_json::json!({
             "id": format!("call_{idx}"),
@@ -126,7 +131,11 @@ fn extract_gemini_tool_calls(resp: &serde_json::Value) -> Option<serde_json::Val
             "function": { "name": name, "arguments": arguments },
         }));
     }
-    if calls.is_empty() { None } else { Some(serde_json::Value::Array(calls)) }
+    if calls.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Array(calls))
+    }
 }
 
 /// Video generation options for configurable timeouts.

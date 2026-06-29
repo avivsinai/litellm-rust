@@ -73,7 +73,10 @@ fn extract_anthropic_tool_calls(parsed: &Value) -> Option<Value> {
         }
         let id = b.get("id").cloned().unwrap_or(Value::Null);
         let name = b.get("name").cloned().unwrap_or(Value::Null);
-        let input = b.get("input").cloned().unwrap_or(Value::Object(Default::default()));
+        let input = b
+            .get("input")
+            .cloned()
+            .unwrap_or(Value::Object(Default::default()));
         let arguments = serde_json::to_string(&input).unwrap_or_else(|_| "{}".into());
         calls.push(serde_json::json!({
             "id": id,
@@ -81,7 +84,11 @@ fn extract_anthropic_tool_calls(parsed: &Value) -> Option<Value> {
             "function": { "name": name, "arguments": arguments },
         }));
     }
-    if calls.is_empty() { None } else { Some(Value::Array(calls)) }
+    if calls.is_empty() {
+        None
+    } else {
+        Some(Value::Array(calls))
+    }
 }
 
 pub async fn chat_stream(
