@@ -201,11 +201,17 @@ impl ChatRequest {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ChatResponse {
     pub content: String,
     /// Provider reasoning, kept separate from answer content.
     pub reasoning: Option<Reasoning>,
+    /// Tool calls requested by the model, normalized to OpenAI-compatible shape:
+    /// an array of `{ id, type: "function", function: { name, arguments } }` objects.
+    /// `arguments` is the raw JSON string the model produced — call sites usually
+    /// `serde_json::from_str` it before use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Value>,
     pub usage: Usage,
     pub response_id: Option<String>,
     pub header_cost: Option<f64>,

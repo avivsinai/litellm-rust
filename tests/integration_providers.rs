@@ -89,6 +89,101 @@ mod openai_compat_tests {
         assert_eq!(resp.response_id, Some("chatcmpl-123".to_string()));
     }
 
+    /// Verifies that `tool_calls` on the assistant message is surfaced verbatim
+    /// on `ChatResponse` so agent loops can dispatch them.
+    #[tokio::test]
+    async fn chat_completion_surfaces_tool_calls() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "chatcmpl-tool-1",
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call_abc123",
+                            "type": "function",
+                            "function": {
+                                "name": "run_task",
+                                "arguments": "{\"name\":\"nmap\",\"targets\":[\"example.com\"]}"
+                            }
+                        }]
+                    }
+                }],
+                "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+            })))
+            .mount(&mock_server)
+            .await;
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+        let resp = openai_compat::chat(&make_client(), &cfg, simple_chat_request("gpt-4"))
+            .await
+            .unwrap();
+        let calls = resp.tool_calls.expect("tool_calls populated");
+        let arr = calls.as_array().expect("array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["id"], "call_abc123");
+        assert_eq!(arr[0]["function"]["name"], "run_task");
+        // arguments is a JSON string (OpenAI convention) — parse it.
+        let args: serde_json::Value =
+            serde_json::from_str(arr[0]["function"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(args["name"], "nmap");
+        assert_eq!(args["targets"][0], "example.com");
+    }
+
+    /// Empty / missing tool_calls stays as None so callers can `if let Some(_)`.
+    #[tokio::test]
+    async fn chat_completion_omits_tool_calls_when_absent() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "chatcmpl-1",
+                "choices": [{ "message": { "role": "assistant", "content": "hi" } }],
+                "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+            })))
+            .mount(&mock_server)
+            .await;
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+        let resp = openai_compat::chat(&make_client(), &cfg, simple_chat_request("gpt-4"))
+            .await
+            .unwrap();
+        assert!(resp.tool_calls.is_none());
+    }
+
+    /// An empty `tool_calls: []` array is also treated as None.
+    #[tokio::test]
+    async fn chat_completion_treats_empty_tool_calls_as_none() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "chatcmpl-2",
+                "choices": [{ "message": { "role": "assistant", "content": "hi", "tool_calls": [] } }],
+                "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+            })))
+            .mount(&mock_server)
+            .await;
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+        let resp = openai_compat::chat(&make_client(), &cfg, simple_chat_request("gpt-4"))
+            .await
+            .unwrap();
+        assert!(resp.tool_calls.is_none(), "empty array should be treated as None");
+    }
+
     /// Verifies reasoning_tokens extraction from completion_tokens_details.
     #[tokio::test]
     async fn chat_completion_extracts_reasoning_tokens() {
@@ -775,6 +870,48 @@ mod anthropic_tests {
         assert_eq!(resp.usage.prompt_tokens, Some(10));
         assert_eq!(resp.usage.completion_tokens, Some(8));
         assert_eq!(resp.response_id, Some("msg_123".to_string()));
+    }
+
+    /// Anthropic `tool_use` content blocks map to OpenAI-shape tool_calls so
+    /// consumers can use a single dispatch path across providers.
+    #[tokio::test]
+    async fn chat_completion_maps_anthropic_tool_use_to_openai_tool_calls() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_tool_1",
+                "content": [
+                    { "type": "text", "text": "I'll scan that for you." },
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_abc",
+                        "name": "run_task",
+                        "input": { "name": "nmap", "targets": ["example.com"] }
+                    }
+                ],
+                "usage": { "input_tokens": 5, "output_tokens": 5 }
+            })))
+            .mount(&mock_server)
+            .await;
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+        let resp = anthropic::chat(&make_client(), &cfg, simple_chat_request("claude"))
+            .await
+            .unwrap();
+        let calls = resp.tool_calls.expect("tool_calls");
+        let arr = calls.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["id"], "toolu_abc");
+        assert_eq!(arr[0]["type"], "function");
+        assert_eq!(arr[0]["function"]["name"], "run_task");
+        let args: serde_json::Value =
+            serde_json::from_str(arr[0]["function"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(args["name"], "nmap");
+        assert_eq!(args["targets"][0], "example.com");
     }
 
     #[tokio::test]

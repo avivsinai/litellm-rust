@@ -12,6 +12,7 @@ Minimal Rust SDK port of [LiteLLM](https://github.com/BerriAI/litellm) (library 
 
 - **Unified client** for OpenAI-compatible, Anthropic, Gemini, and xAI providers
 - **Chat completions** with streaming (SSE) support
+- **Tool calling** — model-requested function calls surfaced on `ChatResponse.tool_calls` in OpenAI shape (Anthropic `tool_use` and Gemini `functionCall` normalized through the same shape)
 - **Text embeddings**
 - **Image generation** (OpenAI DALL-E / GPT Image)
 - **Video generation** (Gemini Veo, OpenAI Sora)

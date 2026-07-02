@@ -89,14 +89,44 @@ pub async fn chat(client: &Client, cfg: &ProviderConfig, req: ChatRequest) -> Re
         }
     }
 
+    let tool_calls = extract_gemini_tool_calls(&resp);
     Ok(ChatResponse {
         content,
         reasoning: None,
+        tool_calls,
         usage,
         response_id: None,
         header_cost: None,
         raw: if debug { Some(resp) } else { None },
     })
+}
+
+/// Map Gemini `functionCall` parts to the OpenAI tool_calls shape. Gemini emits
+/// `candidates[0].content.parts[].functionCall = { name, args }`; the OpenAI
+/// shape is `{ id, type: "function", function: { name, arguments } }` where
+/// `arguments` is a JSON string. Gemini doesn't give per-call ids, so we
+/// synthesize `call_<idx>` to keep IDs stable within a response.
+fn extract_gemini_tool_calls(resp: &serde_json::Value) -> Option<serde_json::Value> {
+    let parts = resp
+        .get("candidates")?
+        .as_array()?
+        .first()?
+        .get("content")?
+        .get("parts")?
+        .as_array()?;
+    let mut calls: Vec<serde_json::Value> = Vec::new();
+    for (idx, part) in parts.iter().enumerate() {
+        let Some(fc) = part.get("functionCall") else { continue };
+        let name = fc.get("name").cloned().unwrap_or(serde_json::Value::Null);
+        let args = fc.get("args").cloned().unwrap_or_else(|| serde_json::json!({}));
+        let arguments = serde_json::to_string(&args).unwrap_or_else(|_| "{}".into());
+        calls.push(serde_json::json!({
+            "id": format!("call_{idx}"),
+            "type": "function",
+            "function": { "name": name, "arguments": arguments },
+        }));
+    }
+    if calls.is_empty() { None } else { Some(serde_json::Value::Array(calls)) }
 }
 
 /// Video generation options for configurable timeouts.

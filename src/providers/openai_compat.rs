@@ -38,6 +38,10 @@ struct OpenAIMessage {
     reasoning_content: Option<String>,
     reasoning: Option<String>,
     reasoning_details: Option<Value>,
+    /// Raw OpenAI-format tool_calls array, surfaced unchanged on `ChatResponse`.
+    /// Optional because non-tool-using replies omit it entirely.
+    #[serde(default)]
+    tool_calls: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -180,6 +184,9 @@ pub async fn chat(client: &Client, cfg: &ProviderConfig, req: ChatRequest) -> Re
         .and_then(|message| extract_text_value(message.content.as_ref()))
         .unwrap_or_default();
     let reasoning = first_message.and_then(extract_reasoning);
+    let tool_calls = first_message
+        .and_then(|m| m.tool_calls.clone())
+        .filter(|v| !matches!(v, Value::Null) && !matches!(v, Value::Array(a) if a.is_empty()));
     let header_cost = headers
         .get("x-litellm-response-cost")
         .and_then(|v| v.to_str().ok())
@@ -192,6 +199,7 @@ pub async fn chat(client: &Client, cfg: &ProviderConfig, req: ChatRequest) -> Re
     Ok(ChatResponse {
         content,
         reasoning,
+        tool_calls,
         usage,
         response_id: parsed.id,
         header_cost,
