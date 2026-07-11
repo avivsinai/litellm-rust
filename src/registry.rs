@@ -48,11 +48,11 @@ impl Registry {
                     .get("max_input_tokens")
                     .or_else(|| obj.get("max_tokens"))
                     .and_then(|v| v.as_u64())
-                    .map(|v| v as u32);
+                    .and_then(|v| u32::try_from(v).ok());
                 let max_output = obj
                     .get("max_output_tokens")
                     .and_then(|v| v.as_u64())
-                    .map(|v| v as u32);
+                    .and_then(|v| u32::try_from(v).ok());
                 let mode = obj
                     .get("mode")
                     .and_then(|v| v.as_str())
@@ -148,6 +148,25 @@ mod tests {
         assert_eq!(model.output_cost_per_1k, Some(0.002));
         assert_eq!(model.max_input_tokens, Some(4096));
         assert_eq!(model.max_output_tokens, Some(1024));
+    }
+
+    #[test]
+    fn token_counts_beyond_u32_are_dropped_not_truncated() {
+        let registry = Registry::from_json_str(
+            r#"{
+                "sample_spec": {},
+                "test/overflow": {
+                    "max_input_tokens": 5000000000,
+                    "max_output_tokens": 4294967296,
+                    "mode": "chat"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let model = registry.get("test/overflow").unwrap();
+        assert_eq!(model.max_input_tokens, None);
+        assert_eq!(model.max_output_tokens, None);
     }
 
     #[test]

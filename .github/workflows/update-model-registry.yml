@@ -9,36 +9,109 @@ concurrency:
   group: update-model-registry
   cancel-in-progress: false
 
-permissions:
-  actions: write
-  contents: write
-  pull-requests: write
+permissions: {}
 
 jobs:
-  update:
-    name: Refresh registry
+  validate:
+    # Runs cargo (build scripts, proc macros) against the fetched data, so it
+    # holds no write credentials: a compromised dependency or upstream file
+    # cannot mutate the repository from here.
+    name: Fetch and validate
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.changes.outputs.changed }}
+      registry_sha: ${{ steps.digest.outputs.sha }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Fetch and validate the LiteLLM model registry
         run: scripts/update-model-registry.sh
 
+      - name: Record pre-cargo digest
+        id: digest
+        run: echo "sha=$(sha256sum data/model_prices_and_context_window.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
       - name: Verify embedded registry invariants
         run: cargo test registry::tests
+
+      - name: Prove cargo did not touch the artifact
+        run: |
+          post=$(sha256sum data/model_prices_and_context_window.json | cut -d' ' -f1)
+          if [[ "$post" != "${{ steps.digest.outputs.sha }}" ]]; then
+            echo "error: registry data changed during cargo execution" >&2
+            exit 1
+          fi
 
       - name: Detect registry changes
         id: changes
         run: |
-          if git diff --quiet -- data/model_prices_and_context_window.json; then
+          if git diff --quiet -- data/; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create or update the refresh pull request
+      - name: Upload refreshed registry
         if: steps.changes.outputs.changed == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: refreshed-registry
+          path: data/model_prices_and_context_window.json
+          if-no-files-found: error
+
+  publish:
+    # Holds the write token but never executes fetched data or cargo: it only
+    # moves the already-validated artifact into a commit, runs CI on the
+    # branch, and merges after the full run (not just required checks) passes.
+    name: Publish refresh pull request
+    needs: validate
+    if: needs.validate.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Download refreshed registry
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: refreshed-registry
+          path: incoming-registry/
+
+      - name: Re-validate the artifact with trusted code
+        run: |
+          # The validate job ran cargo (untrusted build scripts) after this
+          # file was produced, so trust nothing: enforce an exact allowlist,
+          # prove the bytes are the exact pre-cargo file (a leftover process
+          # could have mutated it between the post-cargo check and upload),
+          # then re-run the full validator and relational guards from THIS
+          # checkout by replaying the update through a file:// source. The
+          # script also regenerates the baseline, so the artifact never
+          # carries it.
+          extras=$(find incoming-registry -type f ! -name model_prices_and_context_window.json)
+          if [[ -n "$extras" ]]; then
+            echo "error: unexpected files in artifact:" "$extras" >&2
+            exit 1
+          fi
+          actual_sha=$(sha256sum incoming-registry/model_prices_and_context_window.json | cut -d' ' -f1)
+          if [[ "$actual_sha" != "${{ needs.validate.outputs.registry_sha }}" ]]; then
+            echo "error: artifact digest $actual_sha does not match pre-cargo digest ${{ needs.validate.outputs.registry_sha }}" >&2
+            exit 1
+          fi
+          MODEL_REGISTRY_SOURCE_URL="file://$PWD/incoming-registry/model_prices_and_context_window.json" \
+            scripts/update-model-registry.sh
+          rm -rf incoming-registry
+
+      - name: Create or update the refresh pull request
+        id: pr
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -46,8 +119,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch --create "$branch"
-          git add data/model_prices_and_context_window.json
+          git add data/model_prices_and_context_window.json data/registry-baseline.json
           git commit -m "chore: refresh model registry"
+          sha=$(git rev-parse HEAD)
 
           remote_sha=$(git ls-remote --heads origin "$branch" | awk '{print $1}')
           if [[ -n "$remote_sha" ]]; then
@@ -58,12 +132,142 @@ jobs:
             git push origin "HEAD:refs/heads/$branch"
           fi
 
-          if [[ -z "$(gh pr list --head "$branch" --state open --json number --jq '.[0].number')" ]]; then
+          # `gh pr list --head` matches branch names owner-blind, so on a
+          # public repo a fork PR with the same branch name could shadow the
+          # canonical one. Resolve the same-repo PR explicitly and address it
+          # by number everywhere after this point.
+          resolve_pr() {
+            gh pr list --head "$branch" --state open \
+              --json number,headRepositoryOwner,headRefName \
+              --jq "first(.[] | select(.headRepositoryOwner.login == \"$GITHUB_REPOSITORY_OWNER\" and .headRefName == \"$branch\")) | .number"
+          }
+          pr_number=$(resolve_pr)
+          if [[ -z "$pr_number" ]]; then
             gh pr create \
               --base main \
               --head "$branch" \
               --title "chore: refresh model registry" \
-              --body "Automated daily refresh from LiteLLM's canonical model pricing and context-window registry."
+              --body "Automated daily refresh from LiteLLM's canonical model pricing and context-window registry. Merges automatically once the full validation CI run passes."
+            pr_number=$(resolve_pr)
+          fi
+          if [[ -z "$pr_number" ]]; then
+            echo "error: could not resolve the same-repo refresh pull request" >&2
+            exit 1
           fi
 
-          gh workflow run ci.yml --ref "$branch"
+          head_oid=$(gh pr view "$pr_number" --json headRefOid --jq '.headRefOid')
+          if [[ "$head_oid" != "$sha" ]]; then
+            echo "error: PR #$pr_number head $head_oid does not match pushed commit $sha" >&2
+            exit 1
+          fi
+
+          echo "number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Merge after the full CI run passes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          SHA: ${{ steps.pr.outputs.sha }}
+        run: |
+          # GITHUB_TOKEN-pushed PRs spawn a pull_request CI suite. Discover
+          # every exact-SHA suite regardless of state (it may already be
+          # queued, running, or finished by the time we look), approve the
+          # approval-held subset loudly — a 403/404 here is a real
+          # configuration failure — and prove every discovered suite to
+          # completion below so no half-run suite races the merge.
+          pr_suite_runs=""
+          for _ in $(seq 1 24); do
+            pr_suite_runs=$(gh run list --workflow ci.yml --commit "$SHA" --event pull_request \
+              --json databaseId --jq '.[].databaseId')
+            [[ -n "$pr_suite_runs" ]] && break
+            sleep 5
+          done
+          if [[ -z "$pr_suite_runs" ]]; then
+            echo "error: no pull_request CI suite appeared for $SHA" >&2
+            exit 1
+          fi
+          held_runs=$(gh run list --workflow ci.yml --commit "$SHA" --event pull_request \
+            --json databaseId,conclusion --jq '.[] | select(.conclusion == "action_required") | .databaseId')
+          for run in $held_runs; do
+            gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$run/approve"
+          done
+
+          # Dispatch CI with a unique correlation id surfaced via run-name so
+          # we watch exactly the run we started — never a retry or leftover.
+          dispatch_id="registry-refresh-${GITHUB_RUN_ID}"
+          gh workflow run ci.yml --ref "automation/model-registry-refresh" -f dispatch-id="$dispatch_id"
+
+          run_id=""
+          for _ in $(seq 1 24); do
+            run_id=$(gh run list --workflow ci.yml --commit "$SHA" \
+              --event workflow_dispatch --json databaseId,displayTitle \
+              --jq "first(.[] | select(.displayTitle == \"CI ($dispatch_id)\")) | .databaseId")
+            [[ -n "$run_id" ]] && break
+            sleep 5
+          done
+          if [[ -z "$run_id" ]]; then
+            echo "error: dispatched CI run $dispatch_id for $SHA did not appear" >&2
+            exit 1
+          fi
+
+          # Wait for EVERY suite in play — merging on required checks alone
+          # would let MSRV, docs, cargo-deny, or gitleaks fail after the data
+          # is already on main, and an unfinished PR suite could race the
+          # merge.
+          for watched in $run_id $pr_suite_runs; do
+            if ! gh run watch "$watched" --exit-status --interval 30; then
+              gh pr comment "$PR_NUMBER" --body "Daily registry refresh failed validation CI (run $watched). The next scheduled run force-pushes a fresh attempt from current main."
+              exit 1
+            fi
+          done
+
+          # Merge bound to the exact commit CI validated; fail loudly if the
+          # merge is refused so the retry and alerting paths engage instead of
+          # stalling silently.
+          if ! gh pr merge "$PR_NUMBER" --squash --delete-branch --match-head-commit "$SHA"; then
+            gh pr comment "$PR_NUMBER" --body "CI passed for $SHA but the merge was refused (stale branch or protection drift). The next scheduled run retries from current main."
+            exit 1
+          fi
+
+          # Trust the observed state, not the exit code: prove the PR merged.
+          state=$(gh pr view "$PR_NUMBER" --json state --jq '.state')
+          if [[ "$state" != "MERGED" ]]; then
+            echo "error: PR #$PR_NUMBER is $state after merge command" >&2
+            gh pr comment "$PR_NUMBER" --body "Merge command completed but the PR is $state, not MERGED. Manual attention needed; the next scheduled run also retries."
+            exit 1
+          fi
+
+  notify:
+    # Separate job so alerts fire even when validate/publish time out, and so
+    # issue write access never coexists with code execution or repo write.
+    name: Track scheduled failures
+    needs: [validate, publish]
+    if: always() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Open, update, or close the incident issue
+        run: |
+          title="Scheduled model registry refresh is failing"
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          failed=false
+          if [[ "${{ needs.validate.result }}" != "success" ]]; then failed=true; fi
+          if [[ "${{ needs.publish.result }}" == "failure" || "${{ needs.publish.result }}" == "cancelled" ]]; then failed=true; fi
+
+          number=$(gh issue list --state open --search "in:title \"$title\"" \
+            --json number,title --jq "first(.[] | select(.title == \"$title\")) | .number")
+          if [[ "$failed" == "true" ]]; then
+            if [[ -n "$number" ]]; then
+              gh issue comment "$number" --body "Still failing: $run_url"
+            else
+              gh issue create --title "$title" --body "Run failed: $run_url. The workflow retries daily with a fresh attempt; this issue closes automatically on the next successful run."
+            fi
+          elif [[ -n "$number" ]]; then
+            gh issue close "$number" --comment "Recovered: $run_url completed successfully."
+          fi

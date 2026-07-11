@@ -1,4 +1,5 @@
 name: CI
+run-name: ${{ inputs.dispatch-id != '' && inputs.dispatch-id != null && format('CI ({0})', inputs.dispatch-id) || '' }}
 
 on:
   push:
@@ -6,6 +7,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      dispatch-id:
+        description: Correlation id stamped into run-name by automated dispatchers
+        required: false
+        default: ""
   workflow_call:
 
 concurrency:
