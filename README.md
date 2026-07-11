@@ -148,7 +148,7 @@ The MSRV is **Rust 1.88**. This is verified in CI.
 
 - xAI uses OpenAI-compatible endpoints. Configure provider `xai` with base URL `https://api.x.ai/v1` and `XAI_API_KEY`.
 - Z.AI uses OpenAI-compatible endpoints. The built-in `zai` route uses `https://api.z.ai/api/paas/v4` and `ZAI_API_KEY`.
-- Model IDs are passed through to providers rather than allow-listed. The embedded registry is used for pricing and context metadata and is refreshed daily by an automated pull request.
+- Model IDs are passed through to providers rather than allow-listed. The embedded registry is used for pricing and context metadata and is refreshed daily by an automated pull request that merges itself once validation CI passes; failed refreshes surface as a GitHub issue and retry the next day.
 - This crate intentionally excludes LiteLLM proxy/server features.
 
 ## Contributing
