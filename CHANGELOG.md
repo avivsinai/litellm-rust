@@ -7,9 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-11
+
+### Breaking Changes
+
+- Added `ChatResponse.tool_calls`; downstream code constructing `ChatResponse`
+  with struct literals must initialize the new field. The next release is
+  therefore versioned as `0.3.0`.
+
 ### Added
 
 - Surface model-requested tool calls on `ChatResponse.tool_calls` in OpenAI shape — an array of `{ id, type: "function", function: { name, arguments } }` where `arguments` is the raw JSON string the model produced. OpenAI-compatible providers pass the field through unchanged; Anthropic `tool_use` content blocks and Gemini `functionCall` parts are normalized to the same shape so consumers can use a single dispatch path. Empty / missing arrays become `None`.
+- Add built-in OpenAI-compatible routing for Z.AI models through the `zai/`
+  prefix and `ZAI_API_KEY`.
+- Add a validated daily workflow that refreshes the embedded LiteLLM model
+  registry through a reviewable pull request.
+
+### Changed
+
+- Refresh embedded pricing, context-window, and capability metadata from the
+  current LiteLLM registry.
+- Derive current Anthropic structured-output support from registry metadata,
+  while retaining narrow fallbacks for documented models missing that flag.
 
 ## [0.2.0] - 2026-05-15
 

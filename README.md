@@ -10,7 +10,7 @@ Minimal Rust SDK port of [LiteLLM](https://github.com/BerriAI/litellm) (library 
 
 ## Features
 
-- **Unified client** for OpenAI-compatible, Anthropic, Gemini, and xAI providers
+- **Unified client** for OpenAI-compatible, Anthropic, Gemini, xAI, and Z.AI providers
 - **Chat completions** with streaming (SSE) support
 - **Tool calling** — model-requested function calls surfaced on `ChatResponse.tool_calls` in OpenAI shape (Anthropic `tool_use` and Gemini `functionCall` normalized through the same shape)
 - **Text embeddings**
@@ -20,6 +20,7 @@ Minimal Rust SDK port of [LiteLLM](https://github.com/BerriAI/litellm) (library 
 - **Automatic retry** with exponential backoff
 - **Cost tracking** via response headers
 - **Embedded model registry** with pricing and context window data
+- **Daily model registry refreshes** from LiteLLM's canonical catalog
 
 ## Supported Providers
 
@@ -29,6 +30,7 @@ Minimal Rust SDK port of [LiteLLM](https://github.com/BerriAI/litellm) (library 
 | Anthropic | yes | yes | - | - | - |
 | Gemini | yes | - | - | yes | yes |
 | xAI | yes | yes | - | - | - |
+| Z.AI | yes | yes | - | - | - |
 
 ## Installation
 
@@ -134,6 +136,7 @@ Set API keys via environment variables:
 | `GEMINI_API_KEY` | Google Gemini |
 | `OPENROUTER_API_KEY` | OpenRouter |
 | `XAI_API_KEY` | xAI / Grok |
+| `ZAI_API_KEY` | Z.AI / GLM |
 
 Model routing uses `provider/model` format (e.g., `openai/gpt-4o`, `openrouter/anthropic/claude-sonnet-4-5`).
 
@@ -144,6 +147,8 @@ The MSRV is **Rust 1.88**. This is verified in CI.
 ## Notes
 
 - xAI uses OpenAI-compatible endpoints. Configure provider `xai` with base URL `https://api.x.ai/v1` and `XAI_API_KEY`.
+- Z.AI uses OpenAI-compatible endpoints. The built-in `zai` route uses `https://api.z.ai/api/paas/v4` and `ZAI_API_KEY`.
+- Model IDs are passed through to providers rather than allow-listed. The embedded registry is used for pricing and context metadata and is refreshed daily by an automated pull request.
 - This crate intentionally excludes LiteLLM proxy/server features.
 
 ## Contributing

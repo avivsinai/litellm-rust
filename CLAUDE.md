@@ -26,7 +26,7 @@ MSRV is Rust 1.88. CI also runs `cargo-deny` (dependency audit, configured in `d
 
 **Key modules:**
 - `client.rs` — `LiteLLM` struct: entry point with builder pattern (`.with_provider()`, `.with_default_provider()`)
-- `router.rs` — Parses `"provider/model"` strings, resolves provider config with built-in defaults for openai/anthropic/gemini/openrouter/xai
+- `router.rs` — Parses `"provider/model"` strings, resolves provider config with built-in defaults for openai/anthropic/gemini/openrouter/xai/zai
 - `config.rs` — `Config`, `ProviderConfig`, `ProviderKind` enum (OpenAICompatible, Anthropic, Gemini)
 - `providers/` — One file per provider family. Each exports free functions: `chat()`, `chat_stream()`, `embeddings()`, etc.
 - `http.rs` — Retry logic with exponential backoff. Retries 5xx, 429, 408. 16MB SSE buffer limit.

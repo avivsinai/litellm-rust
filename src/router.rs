@@ -81,6 +81,12 @@ fn default_provider_config(provider: &str) -> Option<ProviderConfig> {
             cfg.kind = ProviderKind::OpenAICompatible;
             Some(cfg)
         }
+        "zai" => {
+            cfg.base_url = Some("https://api.z.ai/api/paas/v4".to_string());
+            cfg.api_key_env = Some("ZAI_API_KEY".to_string());
+            cfg.kind = ProviderKind::OpenAICompatible;
+            Some(cfg)
+        }
         _ => None,
     }
 }
@@ -107,5 +113,19 @@ mod tests {
         let resolved = resolve_model("gpt-4o", &config).unwrap();
         assert_eq!(resolved.provider, "openai");
         assert_eq!(resolved.model, "gpt-4o");
+    }
+
+    #[test]
+    fn resolve_zai_with_builtin_openai_compatible_config() {
+        let resolved = resolve_model("zai/glm-5.2", &Config::default()).unwrap();
+
+        assert_eq!(resolved.provider, "zai");
+        assert_eq!(resolved.model, "glm-5.2");
+        assert_eq!(resolved.config.kind, ProviderKind::OpenAICompatible);
+        assert_eq!(
+            resolved.config.base_url.as_deref(),
+            Some("https://api.z.ai/api/paas/v4")
+        );
+        assert_eq!(resolved.config.api_key_env.as_deref(), Some("ZAI_API_KEY"));
     }
 }

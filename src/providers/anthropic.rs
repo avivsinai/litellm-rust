@@ -296,19 +296,16 @@ fn extract_json_schema(value: &Value) -> Result<Value> {
 
 fn model_supports_output_config(model: &str) -> bool {
     let lower = model.to_lowercase();
-    lower.contains("sonnet-4.5")
-        || lower.contains("sonnet-4-5")
-        || lower.contains("sonnet-4.6")
-        || lower.contains("sonnet-4-6")
-        || lower.contains("haiku-4.5")
-        || lower.contains("haiku-4-5")
-        || lower.contains("opus-4.5")
-        || lower.contains("opus-4-5")
-        || lower.contains("opus-4.6")
-        || lower.contains("opus-4-6")
-        || lower.contains("opus-4.7")
-        || lower.contains("opus-4-7")
-        || lower.contains("mythos")
+    crate::registry::embedded_model_supports_output_config(&lower)
+        || [
+            "sonnet-4.5",
+            "sonnet-4-5",
+            "haiku-4.5",
+            "haiku-4-5",
+            "mythos",
+        ]
+        .iter()
+        .any(|supported| lower.contains(supported))
 }
 
 fn extract_text_and_reasoning(resp: &Value) -> (String, Option<Reasoning>) {
@@ -532,4 +529,31 @@ fn parse_data_url(url: &str, override_format: Option<&str>) -> Result<(String, S
     Err(LiteLLMError::Config(
         "expected data URL for anthropic image; provide data:...;base64,... or format".into(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::model_supports_output_config;
+
+    #[test]
+    fn latest_claude_models_support_structured_outputs() {
+        for model in [
+            "claude-sonnet-5",
+            "claude-opus-4-8",
+            "claude-fable-5",
+            "claude-mythos-5",
+        ] {
+            assert!(
+                model_supports_output_config(model),
+                "expected structured-output support for {model}"
+            );
+        }
+    }
+
+    #[test]
+    fn upstream_metadata_exceptions_are_narrow() {
+        assert!(model_supports_output_config("claude-sonnet-4-5"));
+        assert!(model_supports_output_config("claude-haiku-4-5"));
+        assert!(!model_supports_output_config("claude-3-7-sonnet-20250219"));
+    }
 }

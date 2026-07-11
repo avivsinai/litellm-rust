@@ -1,5 +1,6 @@
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 
 use crate::error::{LiteLLMError, Result};
 
@@ -20,7 +21,10 @@ pub struct Registry {
 
 impl Registry {
     pub fn load_embedded() -> Result<Self> {
-        let raw = include_str!("../data/model_prices_and_context_window.json");
+        Self::from_json_str(include_str!("../data/model_prices_and_context_window.json"))
+    }
+
+    pub fn from_json_str(raw: &str) -> Result<Self> {
         let json: Value = serde_json::from_str(raw)
             .map_err(|e| LiteLLMError::Parse(format!("model registry: {e}")))?;
         let mut models = HashMap::new();
@@ -89,6 +93,29 @@ impl Registry {
     }
 }
 
+pub(crate) fn embedded_model_supports_output_config(model: &str) -> bool {
+    static SUPPORTED_MODELS: OnceLock<HashSet<String>> = OnceLock::new();
+
+    let supported = SUPPORTED_MODELS.get_or_init(|| {
+        let raw = include_str!("../data/model_prices_and_context_window.json");
+        let Ok(Value::Object(models)) = serde_json::from_str::<Value>(raw) else {
+            return HashSet::new();
+        };
+        models
+            .into_iter()
+            .filter_map(|(name, metadata)| {
+                metadata
+                    .get("supports_output_config")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                    .then(|| name.to_ascii_lowercase().replace('.', "-"))
+            })
+            .collect()
+    });
+
+    supported.contains(&model.to_ascii_lowercase().replace('.', "-"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,5 +124,65 @@ mod tests {
     fn loads_registry() {
         let registry = Registry::load_embedded().unwrap();
         assert!(!registry.models.is_empty());
+    }
+
+    #[test]
+    fn parses_registry_from_json_string() {
+        let registry = Registry::from_json_str(
+            r#"{
+                "sample_spec": {},
+                "test/model": {
+                    "input_cost_per_token": 0.000001,
+                    "output_cost_per_token": 0.000002,
+                    "max_input_tokens": 4096,
+                    "max_output_tokens": 1024,
+                    "mode": "chat",
+                    "litellm_provider": "test"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let model = registry.get("test/model").unwrap();
+        assert_eq!(model.input_cost_per_1k, Some(0.001));
+        assert_eq!(model.output_cost_per_1k, Some(0.002));
+        assert_eq!(model.max_input_tokens, Some(4096));
+        assert_eq!(model.max_output_tokens, Some(1024));
+    }
+
+    #[test]
+    fn embedded_registry_retains_metadata_coverage() {
+        let registry = Registry::load_embedded().unwrap();
+        let priced_models = registry
+            .models
+            .values()
+            .filter(|model| model.output_cost_per_1k.is_some())
+            .count();
+        let models_with_context = registry
+            .models
+            .values()
+            .filter(|model| model.max_input_tokens.is_some())
+            .count();
+
+        assert!(
+            priced_models > 1000,
+            "expected broad completion-pricing coverage, found {priced_models} models"
+        );
+        assert!(
+            models_with_context > 1000,
+            "expected broad context-window coverage, found {models_with_context} models"
+        );
+    }
+
+    #[test]
+    fn embedded_capabilities_drive_anthropic_output_config_support() {
+        assert!(embedded_model_supports_output_config("claude-sonnet-5"));
+        assert!(embedded_model_supports_output_config("claude-opus-4.8"));
+        assert!(!embedded_model_supports_output_config(
+            "claude-3-7-sonnet-20250219"
+        ));
+        assert!(!embedded_model_supports_output_config(
+            "claude-3-5-sonnet-20241022"
+        ));
     }
 }
