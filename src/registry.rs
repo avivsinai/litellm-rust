@@ -113,7 +113,17 @@ pub(crate) fn embedded_model_supports_output_config(model: &str) -> bool {
             .collect()
     });
 
-    supported.contains(&model.to_ascii_lowercase().replace('.', "-"))
+    let normalized = model.to_ascii_lowercase().replace('.', "-");
+    if supported.contains(&normalized) {
+        return true;
+    }
+
+    let Some((base, suffix)) = normalized.rsplit_once('-') else {
+        return false;
+    };
+    suffix.len() == 8
+        && suffix.bytes().all(|byte| byte.is_ascii_digit())
+        && supported.contains(base)
 }
 
 #[cfg(test)]
@@ -202,6 +212,34 @@ mod tests {
         ));
         assert!(!embedded_model_supports_output_config(
             "claude-3-5-sonnet-20241022"
+        ));
+    }
+
+    #[test]
+    fn embedded_capabilities_retry_without_one_trailing_date_token() {
+        assert!(embedded_model_supports_output_config(
+            "claude-opus-4.8-20260315"
+        ));
+    }
+
+    #[test]
+    fn embedded_capabilities_do_not_promote_unflagged_dated_models() {
+        assert!(!embedded_model_supports_output_config(
+            "claude-haiku-4-5-20260711"
+        ));
+    }
+
+    #[test]
+    fn embedded_capabilities_leave_non_dated_misses_unsupported() {
+        assert!(!embedded_model_supports_output_config(
+            "claude-sonnet-5-latest"
+        ));
+    }
+
+    #[test]
+    fn embedded_capabilities_strip_at_most_one_trailing_date_token() {
+        assert!(!embedded_model_supports_output_config(
+            "claude-sonnet-5-20260710-20260711"
         ));
     }
 }
