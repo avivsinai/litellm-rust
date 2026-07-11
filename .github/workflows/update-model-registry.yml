@@ -1,0 +1,69 @@
+name: Update model registry
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: update-model-registry
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    name: Refresh registry
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Fetch and validate the LiteLLM model registry
+        run: scripts/update-model-registry.sh
+
+      - name: Verify embedded registry invariants
+        run: cargo test registry::tests
+
+      - name: Detect registry changes
+        id: changes
+        run: |
+          if git diff --quiet -- data/model_prices_and_context_window.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create or update the refresh pull request
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="automation/model-registry-refresh"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch --create "$branch"
+          git add data/model_prices_and_context_window.json
+          git commit -m "chore: refresh model registry"
+
+          remote_sha=$(git ls-remote --heads origin "$branch" | awk '{print $1}')
+          if [[ -n "$remote_sha" ]]; then
+            git push \
+              --force-with-lease="refs/heads/$branch:$remote_sha" \
+              origin "HEAD:refs/heads/$branch"
+          else
+            git push origin "HEAD:refs/heads/$branch"
+          fi
+
+          if [[ -z "$(gh pr list --head "$branch" --state open --json number --jq '.[0].number')" ]]; then
+            gh pr create \
+              --base main \
+              --head "$branch" \
+              --title "chore: refresh model registry" \
+              --body "Automated daily refresh from LiteLLM's canonical model pricing and context-window registry."
+          fi
+
+          gh workflow run ci.yml --ref "$branch"

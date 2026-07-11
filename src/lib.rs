@@ -3,7 +3,7 @@
 //!
 //! litellm-rust is a Rust port of [LiteLLM](https://github.com/BerriAI/litellm).
 //! It provides a single [`LiteLLM`] client that routes requests to OpenAI-compatible,
-//! Anthropic, Gemini, and xAI backends using a `"provider/model"` format.
+//! Anthropic, Gemini, xAI, and Z.AI backends using a `"provider/model"` format.
 //!
 //! # Quick Start
 //!
@@ -46,6 +46,7 @@
 //! | Anthropic | yes | yes | - | - | - |
 //! | Gemini | yes | - | - | yes | yes |
 //! | xAI | yes | yes | - | - | - |
+//! | Z.AI | yes | yes | - | - | - |
 
 pub mod client;
 pub mod config;
