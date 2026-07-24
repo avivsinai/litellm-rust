@@ -9,7 +9,9 @@
 use litellm_rust::config::ProviderConfig;
 use litellm_rust::error::LiteLLMError;
 use litellm_rust::providers::{anthropic, gemini, openai_compat};
-use litellm_rust::types::{ChatMessage, ChatMessageContent, ChatRequest};
+use litellm_rust::types::{
+    ChatContentPart, ChatContentPartText, ChatMessage, ChatMessageContent, ChatRequest,
+};
 use reqwest::Client;
 use serde_json::{json, Map, Value};
 use wiremock::matchers::{body_json, header, method, path};
@@ -1357,6 +1359,211 @@ mod anthropic_tests {
             err_str.contains("503"),
             "Expected 503 in error: {}",
             err_str
+        );
+    }
+
+    /// Verifies `thinking` is forwarded verbatim to the Anthropic request body.
+    #[tokio::test]
+    async fn chat_completion_forwards_thinking_to_request_body() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(body_json(json!({
+                "model": "claude-sonnet-4.5",
+                "messages": [{ "role": "user", "content": [{ "type": "text", "text": "Hello" }] }],
+                "max_tokens": 1024,
+                "thinking": { "type": "adaptive" }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_thinking_fwd",
+                "content": [{ "type": "text", "text": "ok" }],
+                "usage": { "input_tokens": 5, "output_tokens": 2 }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = ChatRequest {
+            model: "claude-sonnet-4.5".to_string(),
+            messages: vec![chat_message("user", "Hello")],
+            temperature: None,
+            max_tokens: None,
+            response_format: None,
+            max_completion_tokens: None,
+            tools: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            stop: None,
+            top_p: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            seed: None,
+            user: None,
+            metadata: None,
+            reasoning_effort: None,
+            thinking: Some(json!({ "type": "adaptive" })),
+            extra_body: None,
+        };
+
+        let resp = anthropic::chat(&make_client(), &cfg, req).await.unwrap();
+        assert_eq!(resp.content, "ok");
+    }
+
+    /// Verifies `reasoning_effort` maps to `output_config.effort`, and that it
+    /// coexists with the `output_config.format` produced by `response_format`
+    /// when both are set on the same request.
+    #[tokio::test]
+    async fn chat_completion_maps_reasoning_effort_into_output_config_alongside_response_format() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(body_json(json!({
+                "model": "claude-sonnet-4.5",
+                "messages": [{ "role": "user", "content": [{ "type": "text", "text": "Return JSON" }] }],
+                "max_tokens": 1024,
+                "output_config": {
+                    "format": {
+                        "type": "json_schema",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "answer": { "type": "string" }
+                            },
+                            "required": ["answer"]
+                        }
+                    },
+                    "effort": "high"
+                }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_effort",
+                "content": [{ "type": "text", "text": "{\"answer\":\"ok\"}" }],
+                "usage": { "input_tokens": 10, "output_tokens": 5 }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = ChatRequest {
+            model: "claude-sonnet-4.5".to_string(),
+            messages: vec![chat_message("user", "Return JSON")],
+            temperature: None,
+            max_tokens: None,
+            response_format: Some(json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "answer": { "type": "string" }
+                        },
+                        "required": ["answer"]
+                    }
+                }
+            })),
+            max_completion_tokens: None,
+            tools: None,
+            tool_choice: None,
+            parallel_tool_calls: None,
+            stop: None,
+            top_p: None,
+            presence_penalty: None,
+            frequency_penalty: None,
+            seed: None,
+            user: None,
+            metadata: None,
+            reasoning_effort: Some(json!("high")),
+            thinking: None,
+            extra_body: None,
+        };
+
+        let resp = anthropic::chat(&make_client(), &cfg, req).await.unwrap();
+        assert_eq!(resp.content, r#"{"answer":"ok"}"#);
+    }
+
+    /// Verifies `cache_control` on a text content part reaches the outgoing
+    /// Anthropic content block, enabling prompt caching.
+    #[tokio::test]
+    async fn chat_completion_forwards_text_part_cache_control() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(body_json(json!({
+                "model": "claude-3-5-sonnet-20241022",
+                "messages": [{
+                    "role": "user",
+                    "content": [{
+                        "type": "text",
+                        "text": "Long context to cache",
+                        "cache_control": { "type": "ephemeral" }
+                    }]
+                }],
+                "max_tokens": 1024
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_cache",
+                "content": [{ "type": "text", "text": "ok" }],
+                "usage": { "input_tokens": 5, "output_tokens": 2 }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let content = ChatMessageContent::Parts(vec![ChatContentPart::Text(ChatContentPartText {
+            kind: "text".into(),
+            text: "Long context to cache".to_string(),
+            cache_control: Some(json!({ "type": "ephemeral" })),
+        })]);
+
+        let req =
+            ChatRequest::new("claude-3-5-sonnet-20241022").message_with_content("user", content);
+
+        let resp = anthropic::chat(&make_client(), &cfg, req).await.unwrap();
+        assert_eq!(resp.content, "ok");
+    }
+
+    /// Verifies `extra_body` can no longer silently override the first-class
+    /// `thinking` field now that it is mapped explicitly.
+    #[tokio::test]
+    async fn chat_completion_rejects_extra_body_thinking_override() {
+        let cfg = ProviderConfig {
+            base_url: Some("http://127.0.0.1:9".to_string()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = ChatRequest::new("claude-sonnet-4.5")
+            .message("user", "Hello")
+            .extra_body(json_object(
+                json!({ "thinking": { "type": "enabled", "budget_tokens": 1024 } }),
+            ));
+
+        let err = anthropic::chat(&make_client(), &cfg, req)
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("protected request field `thinking`"),
+            "unexpected error: {err}"
         );
     }
 }

@@ -172,10 +172,17 @@ fn build_anthropic_body(
         body["stop_sequences"] = serde_json::json!(stop_sequences);
     }
 
-    if let Some(output_config) =
-        map_response_format_to_output_config(&req.model, req.response_format.as_ref())?
-    {
+    let mut output_config =
+        map_response_format_to_output_config(&req.model, req.response_format.as_ref())?;
+    if let Some(ref effort) = req.reasoning_effort {
+        output_config.get_or_insert_with(|| serde_json::json!({}))["effort"] = effort.clone();
+    }
+    if let Some(output_config) = output_config {
         body["output_config"] = output_config;
+    }
+
+    if let Some(ref thinking) = req.thinking {
+        body["thinking"] = thinking.clone();
     }
 
     if let Some(tools_value) = req.tools.clone() {
@@ -204,6 +211,7 @@ fn build_anthropic_body(
             "top_p",
             "stop_sequences",
             "output_config",
+            "thinking",
             "tools",
             "tool_choice",
             "metadata",
@@ -374,7 +382,11 @@ struct AnthropicMessage {
 #[serde(tag = "type")]
 enum AnthropicContentBlock {
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<Value>,
+    },
     #[serde(rename = "image")]
     Image { source: AnthropicImageSource },
 }
@@ -434,16 +446,24 @@ async fn anthropic_blocks_from_content(
     match content {
         ChatMessageContent::Text(text) => Ok(vec![AnthropicContentBlock::Text {
             text: text.to_string(),
+            cache_control: None,
         }]),
         ChatMessageContent::Parts(parts) => {
             let mut out = Vec::new();
             for part in parts {
                 match part {
-                    ChatContentPart::Text(ChatContentPartText { text, .. }) => {
+                    ChatContentPart::Text(ChatContentPartText {
+                        text,
+                        cache_control,
+                        ..
+                    }) => {
                         if text.is_empty() {
                             continue;
                         }
-                        out.push(AnthropicContentBlock::Text { text: text.clone() });
+                        out.push(AnthropicContentBlock::Text {
+                            text: text.clone(),
+                            cache_control: cache_control.clone(),
+                        });
                     }
                     ChatContentPart::ImageUrl(ChatContentPartImageUrl { image_url, .. }) => {
                         let source = anthropic_image_source(client, image_url).await?;

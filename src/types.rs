@@ -30,6 +30,10 @@ pub struct ChatContentPartText {
     #[serde(rename = "type")]
     pub kind: Cow<'static, str>,
     pub text: String,
+    /// Anthropic (and OpenRouter) prompt caching hint, e.g. `{"type": "ephemeral"}`.
+    /// Forwarded verbatim; ignored by providers that don't support it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
