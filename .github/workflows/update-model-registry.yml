@@ -155,9 +155,20 @@ jobs:
             exit 1
           fi
 
-          head_oid=$(gh pr view "$pr_number" --json headRefOid --jq '.headRefOid')
+          # The PR object's head is synced from the ref by an async GitHub
+          # job, so it can lag the push by seconds (it lagged past our single
+          # immediate read for six straight days in July 2026). Poll for up
+          # to ~60s before declaring a mismatch.
+          for attempt in $(seq 1 12); do
+            head_oid=$(gh pr view "$pr_number" --json headRefOid --jq '.headRefOid')
+            if [[ "$head_oid" == "$sha" ]]; then
+              break
+            fi
+            echo "PR #$pr_number head $head_oid has not caught up to pushed commit $sha (attempt $attempt/12); retrying in 5s" >&2
+            sleep 5
+          done
           if [[ "$head_oid" != "$sha" ]]; then
-            echo "error: PR #$pr_number head $head_oid does not match pushed commit $sha" >&2
+            echo "error: PR #$pr_number head $head_oid does not match pushed commit $sha after ~60s" >&2
             exit 1
           fi
 
