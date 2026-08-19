@@ -1,6 +1,8 @@
 # litellm-rust
 
 [![CI](https://github.com/avivsinai/litellm-rust/actions/workflows/ci.yml/badge.svg)](https://github.com/avivsinai/litellm-rust/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/litellm-rust.svg)](https://crates.io/crates/litellm-rust)
+[![docs.rs](https://docs.rs/litellm-rust/badge.svg)](https://docs.rs/litellm-rust)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust: 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org/)
 
@@ -34,7 +36,22 @@ Minimal Rust SDK port of [LiteLLM](https://github.com/BerriAI/litellm) (library 
 
 ## Installation
 
-Add to your `Cargo.toml`:
+Prefer [crates.io](https://crates.io/crates/litellm-rust). The published crate is **litellm-rust** `0.3.0`.
+
+```bash
+cargo add litellm-rust
+```
+
+Or add it to your `Cargo.toml`:
+
+```toml
+[dependencies]
+litellm-rust = "0.3.0"
+```
+
+This is a library crate (no CLI). There is no `cargo install` binary.
+
+To depend on unreleased `main` instead of the crates.io release:
 
 ```toml
 [dependencies]
