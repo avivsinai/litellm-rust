@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Document crates.io (`litellm-rust` 0.3.0) as the preferred install path and keep git as the unreleased-`main` option.
+
 ## [0.3.0] - 2026-07-11
 
 ### Breaking Changes
