@@ -60,6 +60,29 @@ litellm-rust = { git = "https://github.com/avivsinai/litellm-rust" }
 
 ## Quick Start
 
+### Astra Responses transport
+
+Tool-enabled Astra requests use the opt-in `OpenAIResponses` provider kind. Keep
+the existing `OpenAICompatible` kind for Chat Completions and for cheaper or
+image models. Responses requests use `max_completion_tokens` (mapped to
+`max_output_tokens`); `max_tokens` is rejected. Streaming function-call items
+are exposed in each chunk's `raw` field so callers can accumulate argument
+deltas and send the resulting `ChatRequest` tool output with its `call_id`.
+
+```rust
+let client = LiteLLM::new()?.with_provider(
+    "astra",
+    ProviderConfig::default()
+        .with_kind(ProviderKind::OpenAIResponses)
+        .with_base_url("https://api.openai.com/v1")
+        .with_api_key_env("OPENAI_API_KEY"),
+);
+
+let response = client
+    .completion(ChatRequest::new("astra/gpt-6-astra").message("user", "hello"))
+    .await?;
+```
+
 ```rust
 use litellm_rust::{
     LiteLLM, ProviderConfig, ProviderKind,
