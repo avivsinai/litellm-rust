@@ -157,7 +157,12 @@ where
         while let Some(event) = events.next().await {
             let event = event?;
             let data = event.data.trim();
-            if data == "[DONE]" { return; }
+            if data == "[DONE]" {
+                if !refusal.is_empty() {
+                    Err(LiteLLMError::Refusal { text: refusal.clone(), usage: usage.clone() })?;
+                }
+                return;
+            }
             let value: Value = serde_json::from_str(data)
                 .map_err(|e| LiteLLMError::Parse(e.to_string()))?;
             let kind = value.get("type").and_then(Value::as_str).or(event.event.as_deref());
@@ -170,6 +175,11 @@ where
                 Err(LiteLLMError::http(message))?;
             }
             if matches!(kind, Some("response.failed" | "response.incomplete")) {
+                if kind == Some("response.incomplete") {
+                    if let Some(incomplete_usage) = value.get("response").and_then(parse_responses_usage) {
+                        usage = incomplete_usage;
+                    }
+                }
                 let message = value
                     .pointer("/response/error/message")
                     .and_then(Value::as_str)
@@ -186,7 +196,7 @@ where
             }
             if kind == Some("response.refusal.done") {
                 if let Some(text) = value.get("refusal").and_then(Value::as_str) {
-                    refusal.push_str(text);
+                    refusal = text.to_owned();
                 }
                 if !refusal.is_empty() {
                     Err(LiteLLMError::Refusal { text: refusal.clone(), usage: usage.clone() })?;
@@ -217,11 +227,17 @@ where
                 if !completed_refusal.is_empty() {
                     Err(LiteLLMError::Refusal { text: completed_refusal, usage: usage.clone() })?;
                 }
+                if !refusal.is_empty() {
+                    Err(LiteLLMError::Refusal { text: refusal.clone(), usage: usage.clone() })?;
+                }
             }
             if !content.is_empty() || reasoning.is_some() || event_usage.is_some()
                 || kind.map(|k| k.starts_with("response.function_call_arguments.") || k.starts_with("response.output_item.")).unwrap_or(false) {
                 yield ChatStreamChunk { content, reasoning, raw: Some(value), usage: event_usage };
             }
+        }
+        if !refusal.is_empty() {
+            Err(LiteLLMError::Refusal { text: refusal, usage })?;
         }
     };
     Box::pin(s)
@@ -390,6 +406,55 @@ mod tests {
             LiteLLMError::Refusal { text, usage } => {
                 assert_eq!(text, "no");
                 assert_eq!(usage.total_tokens, Some(2));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        let refusal_done = concat!(
+            "data: {\"type\":\"response.refusal.delta\",\"delta\":\"no\"}\n\n",
+            "data: {\"type\":\"response.refusal.done\",\"refusal\":\"no\"}\n\n",
+        );
+        let mut stream =
+            parse_responses_sse_stream(stream::iter(vec![Ok(Bytes::from(refusal_done))]));
+        match stream.next().await.unwrap().unwrap_err() {
+            LiteLLMError::Refusal { text, .. } => assert_eq!(text, "no"),
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        let refusal_completed = concat!(
+            "data: {\"type\":\"response.refusal.delta\",\"delta\":\"no\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
+        );
+        let mut stream =
+            parse_responses_sse_stream(stream::iter(vec![Ok(Bytes::from(refusal_completed))]));
+        match stream.next().await.unwrap().unwrap_err() {
+            LiteLLMError::Refusal { text, usage } => {
+                assert_eq!(text, "no");
+                assert_eq!(usage.total_tokens, Some(2));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        let refusal_eof = "data: {\"type\":\"response.refusal.delta\",\"delta\":\"no\"}\n\n";
+        let mut stream =
+            parse_responses_sse_stream(stream::iter(vec![Ok(Bytes::from(refusal_eof))]));
+        match stream.next().await.unwrap().unwrap_err() {
+            LiteLLMError::Refusal { text, .. } => assert_eq!(text, "no"),
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        let incomplete = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
+            "data: {\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"usage\":{\"input_tokens\":4,\"output_tokens\":6,\"total_tokens\":10}}}\n\n",
+        );
+        let mut stream =
+            parse_responses_sse_stream(stream::iter(vec![Ok(Bytes::from(incomplete))]));
+        assert_eq!(stream.next().await.unwrap().unwrap().content, "partial");
+        match stream.next().await.unwrap().unwrap_err() {
+            LiteLLMError::Truncated { text, usage } => {
+                assert_eq!(text, "partial");
+                assert_eq!(usage.prompt_tokens, Some(4));
+                assert_eq!(usage.total_tokens, Some(10));
             }
             other => panic!("unexpected error: {other:?}"),
         }
