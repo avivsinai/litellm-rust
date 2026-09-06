@@ -9,7 +9,10 @@
 use litellm_rust::config::ProviderConfig;
 use litellm_rust::error::LiteLLMError;
 use litellm_rust::providers::{anthropic, gemini, openai_compat};
-use litellm_rust::types::{ChatMessage, ChatMessageContent, ChatRequest};
+use litellm_rust::types::{
+    ChatContentPart, ChatContentPartImageUrl, ChatContentPartText, ChatImageUrl,
+    ChatImageUrlObject, ChatMessage, ChatMessageContent, ChatRequest,
+};
 use reqwest::Client;
 use serde_json::{json, Map, Value};
 use wiremock::matchers::{body_json, header, method, path};
@@ -825,6 +828,264 @@ mod openai_compat_tests {
             .await
             .unwrap();
         assert_eq!(next_resp.content, "next");
+    }
+    #[tokio::test]
+    async fn responses_transport_maps_tools_and_parses_function_calls() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(body_json(json!({
+                "model": "gpt-6-astra",
+                "input": [{"role":"user","content":"weather"}],
+                "tools": [{
+                    "type":"function", "name":"weather", "description":"Get weather",
+                    "parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},
+                    "strict":true
+                }],
+                "tool_choice":{"type":"function","name":"weather"},
+                "reasoning":{"effort":"low"}
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id":"resp_1",
+                "output":[{"type":"function_call","id":"fc_1","call_id":"call_1","name":"weather","arguments":"{\"city\":\"Haifa\"}"}],
+                "usage":{"input_tokens":7,"output_tokens":4,"total_tokens":11,"output_tokens_details":{"reasoning_tokens":2}}
+            })))
+            .mount(&mock_server).await;
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".into()),
+            ..Default::default()
+        };
+        let mut req = ChatRequest::new("gpt-6-astra").message("user", "weather");
+        req.tools = Some(
+            json!([{"type":"function","function":{"name":"weather","description":"Get weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},"strict":true}}]),
+        );
+        req.tool_choice = Some(json!({"type":"function","function":{"name":"weather"}}));
+        req.reasoning_effort = Some(json!("low"));
+        let response = openai_compat::responses_chat(&make_client(), &cfg, req)
+            .await
+            .unwrap();
+        assert_eq!(response.response_id.as_deref(), Some("resp_1"));
+        assert_eq!(response.tool_calls.as_ref().unwrap()[0]["id"], "call_1");
+        assert_eq!(
+            response.tool_calls.as_ref().unwrap()[0]["function"]["name"],
+            "weather"
+        );
+        assert_eq!(response.usage.thoughts_tokens, Some(2));
+    }
+
+    #[tokio::test]
+    async fn responses_transport_maps_multimodal_chat_parts() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(body_json(json!({
+                "model":"gpt-6-astra",
+                "input":[{"role":"user","content":[
+                    {"type":"input_text","text":"describe"},
+                    {"type":"input_image","image_url":"https://example.test/photo.png"}
+                ]}]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id":"resp_vision",
+                "output":[{"type":"message","content":[{"type":"output_text","text":"a photo"}]}]
+            })))
+            .mount(&mock_server)
+            .await;
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".into()),
+            ..Default::default()
+        };
+        let req = ChatRequest::new("gpt-6-astra").message_with_content(
+            "user",
+            ChatMessageContent::Parts(vec![
+                ChatContentPart::Text(ChatContentPartText {
+                    kind: "text".into(),
+                    text: "describe".into(),
+                }),
+                ChatContentPart::ImageUrl(ChatContentPartImageUrl {
+                    kind: "image_url".into(),
+                    image_url: ChatImageUrl::Object(ChatImageUrlObject {
+                        url: "https://example.test/photo.png".into(),
+                        detail: None,
+                        format: None,
+                    }),
+                }),
+            ]),
+        );
+        let response = openai_compat::responses_chat(&make_client(), &cfg, req)
+            .await
+            .unwrap();
+        assert_eq!(response.content, "a photo");
+    }
+
+    #[tokio::test]
+    async fn responses_transport_submits_tool_output_and_structured_format() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(body_json(json!({
+                "model":"gpt-6-astra",
+                "input":[
+                    {"role":"user","content":"weather"},
+                    {"role":"assistant","content":""},
+                    {"type":"function_call","call_id":"call_1","name":"weather","arguments":"{\"city\":\"Haifa\"}"},
+                    {"type":"function_call_output","call_id":"call_1","output":"sunny"}
+                ],
+                "text":{"format":{"type":"json_schema","name":"answer","schema":{"type":"object"},"strict":true}}
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id":"resp_2",
+                "output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"{\"answer\":\"sunny\"}"}]}]
+            })))
+            .mount(&mock_server).await;
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".into()),
+            ..Default::default()
+        };
+        let mut req = ChatRequest::new("gpt-6-astra").message("user", "weather");
+        req.messages.push(ChatMessage { role:"assistant".into(), content:ChatMessageContent::Text(String::new()), name:None, tool_call_id:None, tool_calls:Some(json!([{"id":"call_1","type":"function","function":{"name":"weather","arguments":"{\"city\":\"Haifa\"}"}}])), function_call:None, provider_specific_fields:None });
+        req.messages.push(ChatMessage {
+            role: "tool".into(),
+            content: ChatMessageContent::Text("sunny".into()),
+            name: None,
+            tool_call_id: Some("call_1".into()),
+            tool_calls: None,
+            function_call: None,
+            provider_specific_fields: None,
+        });
+        req.response_format = Some(
+            json!({"type":"json_schema","json_schema":{"name":"answer","schema":{"type":"object"},"strict":true}}),
+        );
+        let response = openai_compat::responses_chat(&make_client(), &cfg, req)
+            .await
+            .unwrap();
+        assert_eq!(response.content, "{\"answer\":\"sunny\"}");
+    }
+
+    #[tokio::test]
+    async fn responses_transport_omits_astra_sampling_and_normalizes_effort() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(body_json(json!({
+                "model": "gpt-6-astra",
+                "input": [{"role":"user","content":"hi"}],
+                "reasoning": {"effort":"low"}
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id":"resp_sampling",
+                "output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]
+            })))
+            .mount(&mock_server)
+            .await;
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".into()),
+            ..Default::default()
+        };
+        let mut req = ChatRequest::new("gpt-6-astra")
+            .message("user", "hi")
+            .temperature(0.2);
+        req.top_p = Some(0.8);
+        req.reasoning_effort = Some(json!("minimal"));
+        let response = openai_compat::responses_chat(&make_client(), &cfg, req)
+            .await
+            .unwrap();
+        assert_eq!(response.content, "ok");
+    }
+
+    #[tokio::test]
+    async fn responses_transport_keeps_sampling_for_other_models() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id":"resp_sampling_legacy",
+                "output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]
+            })))
+            .mount(&mock_server)
+            .await;
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".into()),
+            ..Default::default()
+        };
+        let mut req = ChatRequest::new("gpt-5.5")
+            .message("user", "hi")
+            .temperature(0.2);
+        req.top_p = Some(0.8);
+        let response = openai_compat::responses_chat(&make_client(), &cfg, req)
+            .await
+            .unwrap();
+        assert_eq!(response.content, "ok");
+        let requests = mock_server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert!((body["temperature"].as_f64().unwrap() - 0.2).abs() < 1e-6);
+        assert!((body["top_p"].as_f64().unwrap() - 0.8).abs() < 1e-6);
+    }
+
+    #[tokio::test]
+    async fn responses_transport_surfaces_failed_and_incomplete_statuses() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id":"resp_failed",
+                "status":"failed",
+                "error":{"message":"policy blocked"}
+            })))
+            .mount(&mock_server)
+            .await;
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".into()),
+            ..Default::default()
+        };
+        let err = openai_compat::responses_chat(
+            &make_client(),
+            &cfg,
+            ChatRequest::new("gpt-6-astra").message("user", "hi"),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("policy blocked"));
+    }
+
+    #[tokio::test]
+    async fn responses_transport_surfaces_refusal_and_incomplete_errors() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id":"resp_refusal",
+                "status":"completed",
+                "output":[{"type":"message","content":[{"type":"refusal","refusal":"no"}]}],
+                "usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}
+            })))
+            .mount(&mock_server)
+            .await;
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".into()),
+            ..Default::default()
+        };
+        let err = openai_compat::responses_chat(
+            &make_client(),
+            &cfg,
+            ChatRequest::new("gpt-6-astra").message("user", "hi"),
+        )
+        .await
+        .unwrap_err();
+        match err {
+            LiteLLMError::Refusal { text, usage } => {
+                assert_eq!(text, "no");
+                assert_eq!(usage.total_tokens, Some(3));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }
 

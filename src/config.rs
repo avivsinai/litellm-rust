@@ -20,6 +20,8 @@ pub struct ProviderConfig {
 pub enum ProviderKind {
     #[default]
     OpenAICompatible,
+    /// OpenAI-compatible provider using the `/responses` wire API for chat.
+    OpenAIResponses,
     Anthropic,
     Gemini,
 }
