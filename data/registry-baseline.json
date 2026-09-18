@@ -1,11 +1,11 @@
 {
-  "total": 4110,
+  "total": 4115,
   "core_providers": {
     "openai": 237,
     "anthropic": 28,
     "gemini": 94,
     "xai": 56,
     "zai": 16,
-    "openrouter": 268
+    "openrouter": 269
   }
 }
