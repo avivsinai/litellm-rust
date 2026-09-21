@@ -181,22 +181,23 @@ jobs:
           PR_NUMBER: ${{ steps.pr.outputs.number }}
           SHA: ${{ steps.pr.outputs.sha }}
         run: |
-          # GITHUB_TOKEN-pushed PRs spawn a pull_request CI suite. Discover
-          # every exact-SHA suite regardless of state (it may already be
-          # queued, running, or finished by the time we look), approve the
-          # approval-held subset loudly — a 403/404 here is a real
-          # configuration failure — and prove every discovered suite to
-          # completion below so no half-run suite races the merge.
+          # GITHUB_TOKEN-pushed PRs spawn a pull_request CI suite, but
+          # first-party approval and GitHub's async enqueue can delay it
+          # past a short poll. Discover every exact-SHA suite for ~8 minutes
+          # regardless of state, approve the approval-held subset when it
+          # appears — a 403/404 here is a real configuration failure — and
+          # prove every discovered suite to completion below. If none
+          # appears, continue: the workflow_dispatch suite is the
+          # authoritative validation for merge.
           pr_suite_runs=""
-          for _ in $(seq 1 24); do
+          for _ in $(seq 1 96); do
             pr_suite_runs=$(gh run list --workflow ci.yml --commit "$SHA" --event pull_request \
               --json databaseId --jq '.[].databaseId')
             [[ -n "$pr_suite_runs" ]] && break
             sleep 5
           done
           if [[ -z "$pr_suite_runs" ]]; then
-            echo "error: no pull_request CI suite appeared for $SHA" >&2
-            exit 1
+            echo "warning: no pull_request CI suite appeared for $SHA; continuing with the workflow_dispatch CI path" >&2
           fi
           held_runs=$(gh run list --workflow ci.yml --commit "$SHA" --event pull_request \
             --json databaseId,conclusion --jq '.[] | select(.conclusion == "action_required") | .databaseId')
