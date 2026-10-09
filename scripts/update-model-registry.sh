@@ -7,11 +7,13 @@ baseline_file=${MODEL_REGISTRY_BASELINE:-"$repo_root/data/registry-baseline.json
 source_url=${MODEL_REGISTRY_SOURCE_URL:-"https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"}
 core_providers='["openai", "anthropic", "gemini", "xai", "zai", "openrouter"]'
 
+# Entry counts (total + per core provider) of a registry object; sample_spec
+# is the one non-model key.
+profile_jq='{total: (length - 1),
+  core_providers: ([to_entries[] | select(.key != "sample_spec") | (.value.litellm_provider? // "")] as $ps
+    | reduce $core[] as $p ({}; .[$p] = ([$ps[] | select(. == $p)] | length)))}'
 profile_of() {
-  jq --argjson core "$core_providers" '
-    {total: (length - 1),
-     core_providers: ([to_entries[] | select(.key != "sample_spec") | (.value.litellm_provider? // "")] as $ps
-       | reduce $core[] as $p ({}; .[$p] = ([$ps[] | select(. == $p)] | length)))}' "$1"
+  jq --argjson core "$core_providers" "$profile_jq" "$1"
 }
 temporary_file=$(mktemp)
 trap 'rm -f "$temporary_file"' EXIT
@@ -97,6 +99,26 @@ elif [[ -f "$destination" ]]; then
 else
   baseline_profile=$new_profile
 fi
+
+# Reviewed retirements: entries our trusted file already marks with a
+# deprecation_date in the past that upstream has now dropped. They are the
+# only loss allowed to lower the high-water mark; any other disappearance
+# (no date, a future date, or a malformed one) still counts against it.
+retired_profile='{"total": 0, "core_providers": {}}'
+if [[ -f "$destination" ]]; then
+  retired_profile=$(jq -n \
+    --slurpfile old "$destination" --slurpfile new "$temporary_file" --arg today "$(date -u +%F)" '
+    $old[0] | with_entries(select(
+      .key == "sample_spec"
+      or ($new[0][.key] == null
+          and (.value.deprecation_date? | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$"))
+          and .value.deprecation_date < $today)))' \
+    | jq --argjson core "$core_providers" "$profile_jq")
+fi
+baseline_profile=$(jq -n --argjson base "$baseline_profile" --argjson retired "$retired_profile" '
+  {total: ([$base.total - $retired.total, 0] | max),
+   core_providers: ($base.core_providers
+     | with_entries(.value = ([.value - ($retired.core_providers[.key] // 0), 0] | max)))}')
 
 shrink_violations=$(jq -n --argjson new "$new_profile" --argjson base "$baseline_profile" '
   [ (if $new.total * 4 < $base.total * 3 then "total \($new.total) vs high-water \($base.total)" else empty end),
