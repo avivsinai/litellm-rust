@@ -38,7 +38,7 @@ jq -e '
 # numeric check. Absent fields are fine; present fields must be exactly typed
 # and in range. max_tokens is validated too — registry.rs consumes it as the
 # max_input_tokens fallback.
-core_providers='["openai", "anthropic", "gemini", "xai", "zai", "openrouter"]'
+core_providers='["openai", "anthropic", "gemini", "xai", "zai"]'
 violations=$(jq --argjson core "$core_providers" '
   def ok_price($f):  (has($f) | not) or (.[$f] | type == "number" and . >= 0 and . <= 0.05);
   def ok_tokens($f): (has($f) | not) or (.[$f] | type == "number" and . == floor and . >= 0 and . <= 50000000);

@@ -5,7 +5,7 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 destination=${MODEL_REGISTRY_DESTINATION:-"$repo_root/data/model_prices_and_context_window.json"}
 baseline_file=${MODEL_REGISTRY_BASELINE:-"$repo_root/data/registry-baseline.json"}
 source_url=${MODEL_REGISTRY_SOURCE_URL:-"https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"}
-core_providers='["openai", "anthropic", "gemini", "xai", "zai", "openrouter"]'
+core_providers='["openai", "anthropic", "gemini", "xai", "zai"]'
 
 # Entry counts (total + per core provider) of a registry object; sample_spec
 # is the one non-model key.
