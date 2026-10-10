@@ -15,7 +15,7 @@ use serde_json::{json, Map, Value};
 fn registry(xai_deprecation: Option<&str>) -> Map<String, Value> {
     let mut entries = Map::new();
     entries.insert("sample_spec".into(), json!({}));
-    for provider in ["openai", "anthropic", "gemini", "zai", "openrouter"] {
+    for provider in ["openai", "anthropic", "gemini", "zai"] {
         entries.insert(
             format!("{provider}/model"),
             json!({"litellm_provider": provider, "mode": "chat"}),
@@ -59,8 +59,8 @@ fn refresh_after_xai_removal(case: &str, trusted: Map<String, Value>) -> (Output
     write_json(&source, &Value::Object(upstream));
     write_json(
         &baseline,
-        &json!({"total": 1083, "core_providers": {
-            "openai": 1, "anthropic": 1, "gemini": 1, "xai": 78, "zai": 1, "openrouter": 1}}),
+        &json!({"total": 1082, "core_providers": {
+            "openai": 1, "anthropic": 1, "gemini": 1, "xai": 78, "zai": 1}}),
     );
 
     let output = Command::new("bash")

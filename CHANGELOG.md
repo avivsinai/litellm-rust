@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The embedded model registry no longer has OpenRouter entries. Upstream LiteLLM removed them (BerriAI/litellm#45665–#45669) because OpenRouter reports request cost in `usage.cost`, which `Usage::cost_usd` already reads. `registry().get("openrouter/...")` now returns `None`; routing `openrouter/...` models is unchanged.
 - Document crates.io (`litellm-rust` 0.3.0) as the preferred install path and keep git as the unreleased-`main` option.
 
 ## [0.3.0] - 2026-07-11
