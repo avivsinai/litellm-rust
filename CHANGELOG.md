@@ -7,8 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-11
+
+### Breaking Changes
+
+- Added the `ProviderKind::OpenAIResponses` variant; downstream code that
+  matches `ProviderKind` exhaustively must handle it.
+- The embedded model registry no longer has OpenRouter entries, so
+  `registry().get("openrouter/...")` now returns `None` (see Changed).
+
+### Added
+
+- Add the opt-in `ProviderKind::OpenAIResponses` transport, which sends chat
+  requests through the OpenAI `/responses` wire API (non-streaming and
+  streaming, including function-call items). Embeddings, image, and video
+  requests on this kind return `LiteLLMError::Unsupported`.
+
+### Fixed
+
+- Recognize dated model snapshots when deriving Anthropic structured-output
+  support from the embedded registry.
+
 ### Changed
 
+- Refresh embedded pricing, context-window, and capability metadata from the
+  current LiteLLM registry.
+- The daily registry refresh accepts upstream removal of models that the
+  committed registry already marks as past their deprecation date.
 - The embedded model registry no longer has OpenRouter entries. Upstream LiteLLM removed them (BerriAI/litellm#45665–#45669) because OpenRouter reports request cost in `usage.cost`, which `Usage::cost_usd` already reads. `registry().get("openrouter/...")` now returns `None`; routing `openrouter/...` models is unchanged.
 - Document crates.io (`litellm-rust` 0.3.0) as the preferred install path and keep git as the unreleased-`main` option.
 
