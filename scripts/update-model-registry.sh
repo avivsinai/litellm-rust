@@ -104,6 +104,9 @@ fi
 # deprecation_date in the past that upstream has now dropped. They are the
 # only loss allowed to lower the high-water mark; any other disappearance
 # (no date, a future date, or a malformed one) still counts against it.
+# Accepted gap: upstream could first add a past deprecation_date to live
+# entries, wait for that refresh to land, then drop them, and so lower the
+# high-water mark permanently. Review deprecation-date diffs in refresh PRs.
 retired_profile='{"total": 0, "core_providers": {}}'
 if [[ -f "$destination" ]]; then
   retired_profile=$(jq -n \
