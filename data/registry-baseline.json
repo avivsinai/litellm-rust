@@ -1,9 +1,9 @@
 {
-  "total": 4068,
+  "total": 4083,
   "core_providers": {
     "openai": 216,
     "anthropic": 22,
-    "gemini": 84,
+    "gemini": 85,
     "xai": 58,
     "zai": 16
   }
