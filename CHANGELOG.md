@@ -33,9 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Send `thinking` and `reasoning_effort` to Gemini as
   `generationConfig.thinkingConfig`. On Gemini 3 and newer, `reasoning_effort`
   becomes `thinkingLevel`: `low`, `medium`, `high` become `LOW`, `MEDIUM`,
-  `HIGH`; `minimal`, `none` and `disable` become `MINIMAL` on Flash models and
-  `LOW` on other models. Older Gemini models, and models without the `gemini-`
-  prefix such as Gemma, get a `thinkingBudget` and never a `thinkingLevel`.
+  `HIGH`; `minimal`, `none` and `disable` become `LOW`. Older Gemini models,
+  and models without the `gemini-` prefix such as Gemma, get a
+  `thinkingBudget` and never a `thinkingLevel`. The budget is never below the
+  model's minimum: `none` and `disable` send 128 on `gemini-2.5-pro`, and
+  `minimal` sends 512 on Flash-Lite models.
   `includeThoughts` is `true`, or `false` for `none` and `disable`, unless
   `thinking` sets it.
 

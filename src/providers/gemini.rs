@@ -174,12 +174,19 @@ fn build_generation_config(req: &ChatRequest, model: &str) -> Result<Map<String,
 /// - `thinking` as a bool sets `includeThoughts`; as a number it sets
 ///   `thinkingBudget`.
 /// - `reasoning_effort` is used only when `thinking` did not already set a
-///   budget or a level, because Gemini rejects both in one request. Gemini 3
-///   and newer take it as a `ThinkingLevel` enum value (`MINIMAL`, `LOW`,
-///   `MEDIUM`, `HIGH`). Older models reject `thinkingLevel`, so there the
-///   effort maps to a `thinkingBudget` with the same token values as Python
-///   LiteLLM. Unless `thinking` set it, `includeThoughts` is `true`, or
-///   `false` for `none` / `disable`. Other effort values are a config error.
+///   budget or a level, because Gemini rejects both in one request.
+///   - Gemini 3 and newer take a `thinkingLevel`: `low`, `medium`, `high`
+///     become `LOW`, `MEDIUM`, `HIGH`; `minimal`, `none` and `disable` become
+///     `LOW`. Gemini 3 cannot turn thinking off, and not every Gemini 3 model
+///     accepts `MINIMAL`, so `LOW` is the lowest level that all of them take.
+///   - Older models reject `thinkingLevel`, so the effort becomes a
+///     `thinkingBudget` with Python LiteLLM's token values (`none` /
+///     `disable` 0, `minimal` 128, `low` 1024, `medium` 2048, `high` 4096),
+///     raised to the model's minimum: `gemini-2.5-pro` cannot turn thinking
+///     off, so `none` / `disable` send 128; Flash-Lite models accept 0 or
+///     512 and more, so `minimal` sends 512.
+///   - Unless `thinking` set it, `includeThoughts` is `true`, or `false` for
+///     `none` / `disable`. Other effort values are a config error.
 fn build_thinking_config(
     thinking: Option<&Value>,
     reasoning_effort: Option<&Value>,
@@ -223,11 +230,11 @@ fn build_thinking_config(
             LiteLLMError::Config("gemini reasoning_effort must be a string".into())
         })?;
         let (key, value) = if pre_gemini_3 {
-            let budget = effort_to_thinking_budget(effort)
+            let budget = effort_to_thinking_budget(effort, model)
                 .ok_or_else(|| unsupported_reasoning_effort(effort))?;
             ("thinkingBudget", Value::from(budget))
         } else {
-            let level = effort_to_thinking_level(effort, model)
+            let level = effort_to_thinking_level(effort)
                 .ok_or_else(|| unsupported_reasoning_effort(effort))?;
             ("thinkingLevel", Value::from(level))
         };
@@ -245,30 +252,28 @@ fn unsupported_reasoning_effort(effort: &str) -> LiteLLMError {
     ))
 }
 
-/// Token budgets used by Python LiteLLM for pre-Gemini-3 `reasoning_effort`.
-fn effort_to_thinking_budget(effort: &str) -> Option<u32> {
-    match effort {
-        "none" | "disable" => Some(0),
-        "minimal" => Some(128),
-        "low" => Some(1024),
-        "medium" => Some(2048),
-        "high" => Some(4096),
-        _ => None,
-    }
+/// Token budgets used by Python LiteLLM for pre-Gemini-3 `reasoning_effort`,
+/// raised to the minimum the model accepts.
+fn effort_to_thinking_budget(effort: &str, model: &str) -> Option<u32> {
+    let name = model.rsplit('/').next().unwrap_or(model).to_lowercase();
+    let budget = match effort {
+        "none" | "disable" if name.contains("gemini-2.5-pro") => 128,
+        "none" | "disable" => 0,
+        "minimal" if name.contains("flash-lite") => 512,
+        "minimal" => 128,
+        "low" => 1024,
+        "medium" => 2048,
+        "high" => 4096,
+        _ => return None,
+    };
+    Some(budget)
 }
 
-/// `ThinkingLevel` enum values for Gemini 3 and newer. Gemini 3 cannot turn
-/// thinking off, so `none` / `disable` use the lowest level. Only Flash
-/// models accept `MINIMAL`; the others get `LOW`, as in Python LiteLLM.
-fn effort_to_thinking_level(effort: &str, model: &str) -> Option<&'static str> {
-    let lowest = if model.to_lowercase().contains("flash") {
-        "MINIMAL"
-    } else {
-        "LOW"
-    };
+/// `ThinkingLevel` enum values for Gemini 3 and newer. `LOW` is the lowest
+/// level every Gemini 3 model accepts.
+fn effort_to_thinking_level(effort: &str) -> Option<&'static str> {
     match effort {
-        "none" | "disable" | "minimal" => Some(lowest),
-        "low" => Some("LOW"),
+        "none" | "disable" | "minimal" | "low" => Some("LOW"),
         "medium" => Some("MEDIUM"),
         "high" => Some("HIGH"),
         _ => None,
