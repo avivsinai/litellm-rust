@@ -30,6 +30,10 @@ pub struct ChatContentPartText {
     #[serde(rename = "type")]
     pub kind: Cow<'static, str>,
     pub text: String,
+    /// Anthropic (and OpenRouter) prompt caching hint, e.g. `{"type": "ephemeral"}`.
+    /// Forwarded verbatim; ignored by providers that don't support it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -285,6 +289,12 @@ pub struct Usage {
     pub thoughts_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
     pub cost_usd: Option<f64>,
+    /// Prompt tokens read from the provider's prompt cache. Included in
+    /// `prompt_tokens`.
+    pub cache_read_input_tokens: Option<u64>,
+    /// Prompt tokens written to the provider's prompt cache. Included in
+    /// `prompt_tokens`.
+    pub cache_creation_input_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

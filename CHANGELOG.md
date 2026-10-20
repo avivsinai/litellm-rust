@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Added `ChatContentPartText.cache_control`; downstream code constructing
+  `ChatContentPartText` with struct literals must initialize the new field.
+  The next release is therefore versioned as `0.5.0`.
+- Anthropic requests now reject `thinking` in `extra_body`. Set
+  `ChatRequest.thinking` instead.
+- Added `Usage.cache_read_input_tokens` and
+  `Usage.cache_creation_input_tokens`; downstream code constructing `Usage`
+  with struct literals must initialize the new fields.
+- `LiteLLMError::Refusal` and `LiteLLMError::Truncated` now carry
+  `usage: Box<Usage>`, which keeps the error type small after `Usage` grew.
+  Code that constructs these variants must box the value.
+- Anthropic `Usage.prompt_tokens` is now the total prompt tokens:
+  `input_tokens` plus cache-read and cache-creation tokens. Before, it was
+  `input_tokens` only, which excludes cached tokens.
+- Anthropic requests that set `ChatRequest.reasoning_effort` now send
+  `output_config.effort`. Models without effort support return an upstream
+  error; before, the field was silently dropped.
+
+### Added
+
+- Forward `cache_control` on text content parts to Anthropic (system and chat
+  messages), so you can set prompt-caching breakpoints. OpenAI-compatible
+  providers receive the field as is; Gemini and the Responses transport
+  ignore it.
+- Report Anthropic prompt-cache usage in `Usage.cache_read_input_tokens` and
+  `Usage.cache_creation_input_tokens` for non-streaming chat. Streaming chat
+  does not report Anthropic usage yet.
+
+### Fixed
+
+- Anthropic no longer drops `ChatRequest.thinking`; it is sent as `thinking`.
+- Anthropic no longer drops `ChatRequest.reasoning_effort`; it is sent as
+  `output_config.effort`, next to any structured-output `format`.
+
 ## [0.4.1] - 2026-10-20
 
 ### Changed
