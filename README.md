@@ -36,7 +36,7 @@ Minimal Rust SDK port of [LiteLLM](https://github.com/BerriAI/litellm) (library 
 
 ## Installation
 
-Prefer [crates.io](https://crates.io/crates/litellm-rust). The published crate is **litellm-rust** `0.4.0`.
+Prefer [crates.io](https://crates.io/crates/litellm-rust). The published crate is **litellm-rust** `0.4.1`.
 
 ```bash
 cargo add litellm-rust
@@ -46,7 +46,7 @@ Or add it to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-litellm-rust = "0.4.0"
+litellm-rust = "0.4.1"
 ```
 
 This is a library crate (no CLI). There is no `cargo install` binary.
