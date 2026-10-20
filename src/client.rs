@@ -62,6 +62,9 @@ impl LiteLLM {
             ProviderKind::OpenAICompatible => {
                 openai_compat::chat_stream(&self.client, &resolved.config, req).await
             }
+            ProviderKind::OpenAIResponses => {
+                openai_compat::responses_chat_stream(&self.client, &resolved.config, req).await
+            }
             ProviderKind::Anthropic => {
                 anthropic::chat_stream(&self.client, &resolved.config, req).await
             }
@@ -76,6 +79,9 @@ impl LiteLLM {
             ProviderKind::OpenAICompatible => {
                 openai_compat::embeddings(&self.client, &resolved.config, req).await
             }
+            ProviderKind::OpenAIResponses => Err(LiteLLMError::Unsupported(
+                "embeddings are not part of the Responses transport".into(),
+            )),
             ProviderKind::Gemini => gemini::embeddings(&self.client, &resolved.config, req).await,
             ProviderKind::Anthropic => Err(LiteLLMError::Unsupported(
                 "embeddings not supported for provider".into(),
@@ -90,6 +96,9 @@ impl LiteLLM {
             ProviderKind::OpenAICompatible => {
                 openai_compat::image_generation(&self.client, &resolved.config, req).await
             }
+            ProviderKind::OpenAIResponses => Err(LiteLLMError::Unsupported(
+                "image generation is not part of the Responses transport".into(),
+            )),
             ProviderKind::Gemini => {
                 gemini::image_generation(&self.client, &resolved.config, req).await
             }
@@ -103,6 +112,9 @@ impl LiteLLM {
         let resolved = resolve_model(&req.model, &self.config)?;
         req.model = resolved.model.clone();
         match resolved.config.kind {
+            ProviderKind::OpenAICompatible | ProviderKind::OpenAIResponses => Err(
+                LiteLLMError::Unsupported("image editing not supported for provider".into()),
+            ),
             ProviderKind::Gemini => {
                 gemini::image_editing(&self.client, &resolved.config, req).await
             }
@@ -119,6 +131,9 @@ impl LiteLLM {
             ProviderKind::OpenAICompatible => {
                 openai_compat::video_generation(&self.client, &resolved.config, req).await
             }
+            ProviderKind::OpenAIResponses => Err(LiteLLMError::Unsupported(
+                "video generation is not part of the Responses transport".into(),
+            )),
             ProviderKind::Gemini => {
                 gemini::video_generation(&self.client, &resolved.config, req).await
             }
@@ -141,6 +156,9 @@ async fn dispatch_chat(
 ) -> Result<ChatResponse> {
     match resolved.config.kind {
         ProviderKind::OpenAICompatible => openai_compat::chat(client, &resolved.config, req).await,
+        ProviderKind::OpenAIResponses => {
+            openai_compat::responses_chat(client, &resolved.config, req).await
+        }
         ProviderKind::Anthropic => anthropic::chat(client, &resolved.config, req).await,
         ProviderKind::Gemini => gemini::chat(client, &resolved.config, req).await,
     }
