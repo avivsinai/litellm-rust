@@ -19,9 +19,9 @@ pub enum LiteLLMError {
     #[error("parse error: {0}")]
     Parse(String),
     #[error("provider refusal: {text}")]
-    Refusal { text: String, usage: Usage },
+    Refusal { text: String, usage: Box<Usage> },
     #[error("provider response truncated: {text}")]
-    Truncated { text: String, usage: Usage },
+    Truncated { text: String, usage: Box<Usage> },
     #[error("unsupported operation: {0}")]
     Unsupported(String),
 }

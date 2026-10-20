@@ -37,23 +37,38 @@ jq -e '
 # jq's // treats false as absent, letting a wrong-typed `false` price bypass a
 # numeric check. Absent fields are fine; present fields must be exactly typed
 # and in range. max_tokens is validated too — registry.rs consumes it as the
-# max_input_tokens fallback.
+# max_input_tokens fallback, and input_cost_per_token_cache_hit as the
+# cache_read_input_token_cost fallback. supported_endpoints/supported_modalities
+# must be arrays of strings — registry.rs filters non-string elements silently,
+# but a wrong-typed field itself must still fail loudly here.
 core_providers='["openai", "anthropic", "gemini", "xai", "zai"]'
 violations=$(jq --argjson core "$core_providers" '
   def ok_price($f):  (has($f) | not) or (.[$f] | type == "number" and . >= 0 and . <= 0.05);
   def ok_tokens($f): (has($f) | not) or (.[$f] | type == "number" and . == floor and . >= 0 and . <= 50000000);
   def ok_bool($f):   (has($f) | not) or (.[$f] | type == "boolean");
   def ok_str($f):    (has($f) | not) or (.[$f] | type == "string");
+  def ok_str_array($f): (has($f) | not) or (.[$f] | type == "array" and all(.[]; type == "string"));
   [to_entries[]
    | select(.key != "sample_spec")
    | select(.value |
        ok_price("input_cost_per_token")
        and ok_price("output_cost_per_token")
+       and ok_price("cache_read_input_token_cost")
+       and ok_price("cache_creation_input_token_cost")
+       and ok_price("input_cost_per_token_cache_hit")
        and ok_tokens("max_input_tokens")
        and ok_tokens("max_output_tokens")
        and ok_tokens("max_tokens")
        and ok_bool("supports_output_config")
        and ok_bool("supports_response_schema")
+       and ok_bool("supports_function_calling")
+       and ok_bool("supports_tool_choice")
+       and ok_bool("supports_vision")
+       and ok_bool("supports_reasoning")
+       and ok_bool("supports_prompt_caching")
+       and ok_bool("supports_parallel_function_calling")
+       and ok_str_array("supported_endpoints")
+       and ok_str_array("supported_modalities")
        and ok_str("litellm_provider")
        and ok_str("mode")
        | not)

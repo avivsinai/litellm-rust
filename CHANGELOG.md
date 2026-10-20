@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
+- Added `ChatContentPartText.cache_control`; downstream code constructing
+  `ChatContentPartText` with struct literals must initialize the new field.
+  The next release is therefore versioned as `0.5.0`.
+- Anthropic requests now reject `thinking` in `extra_body`. Set
+  `ChatRequest.thinking` instead.
+- Added `Usage.cache_read_input_tokens` and
+  `Usage.cache_creation_input_tokens`; downstream code constructing `Usage`
+  with struct literals must initialize the new fields.
+- `LiteLLMError::Refusal` and `LiteLLMError::Truncated` now carry
+  `usage: Box<Usage>`, which keeps the error type small after `Usage` grew.
+  Code that constructs these variants must box the value.
+- Anthropic `Usage.prompt_tokens` is now the total prompt tokens:
+  `input_tokens` plus cache-read and cache-creation tokens. Before, it was
+  `input_tokens` only, which excludes cached tokens.
+- Anthropic requests that set `ChatRequest.reasoning_effort` now send
+  `output_config.effort`. Models without effort support return an upstream
+  error; before, the field was silently dropped.
+- Added 11 public fields to `ModelPricing`: `cache_read_cost_per_1k`,
+  `cache_creation_cost_per_1k`, `supports_function_calling`,
+  `supports_tool_choice`, `supports_vision`, `supports_reasoning`,
+  `supports_prompt_caching`, `supports_response_schema`,
+  `supports_parallel_function_calling`, `supported_endpoints`, and
+  `supported_modalities`. Downstream code that constructs `ModelPricing` with
+  a struct literal must set them.
 - Gemini thought parts (`"thought": true`) now come back in
   `ChatResponse.reasoning` and `ChatStreamChunk.reasoning`. Before, their text
   was part of `content`.
@@ -23,6 +47,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Forward `cache_control` on text content parts to Anthropic (system and chat
+  messages), so you can set prompt-caching breakpoints. OpenAI-compatible
+  providers receive the field as is; Gemini and the Responses transport
+  ignore it.
+- Report Anthropic prompt-cache usage in `Usage.cache_read_input_tokens` and
+  `Usage.cache_creation_input_tokens` for non-streaming chat. Streaming chat
+  does not report Anthropic usage yet.
+- Read prompt-cache prices, capability flags, and supported endpoints and
+  modalities from the embedded model registry into `ModelPricing`. When
+  `cache_read_input_token_cost` is absent, the cache-read price falls back to
+  `input_cost_per_token_cache_hit`. No current registry entry needs this
+  fallback; it guards against upstream regressions.
+- Add `Registry::estimate_cost_with_cache` and
+  `LiteLLM::estimate_cost_with_cache`. They price cache-read and
+  cache-creation tokens at the model's cache rates, and use the input rate
+  when the model has no cache rate. Cache-creation tokens use the base
+  (5-minute TTL) write rate; 1-hour TTL writes and long-context tier rates
+  are not modeled. `input_tokens` must exclude cached tokens: pass
+  Anthropic counts directly, and subtract the cached count from
+  OpenAI-compatible and Gemini prompt counts first.
 - Stream Gemini chat completions with `stream_completion`. Requests go to
   `streamGenerateContent?alt=sse`. Only the chunk with the `finishReason`
   carries `usage`.
@@ -40,6 +84,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `minimal` sends 512 on Flash-Lite models.
   `includeThoughts` is `true`, or `false` for `none` and `disable`, unless
   `thinking` sets it.
+
+### Fixed
+
+- Anthropic no longer drops `ChatRequest.thinking`; it is sent as `thinking`.
+- Anthropic no longer drops `ChatRequest.reasoning_effort`; it is sent as
+  `output_config.effort`, next to any structured-output `format`.
 
 ## [0.4.1] - 2026-10-20
 

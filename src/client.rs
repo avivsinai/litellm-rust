@@ -147,6 +147,28 @@ impl LiteLLM {
         self.registry
             .estimate_cost(model, input_tokens, output_tokens)
     }
+
+    /// See [`Registry::estimate_cost_with_cache`] for the token-accounting
+    /// contract: `input_tokens` must exclude `cache_read_tokens` and
+    /// `cache_creation_tokens`. Anthropic's `input_tokens` already does this.
+    /// OpenAI-compatible and Gemini prompt counts include cached tokens, so
+    /// subtract the cached count first.
+    pub fn estimate_cost_with_cache(
+        &self,
+        model: &str,
+        input_tokens: u32,
+        output_tokens: u32,
+        cache_read_tokens: u32,
+        cache_creation_tokens: u32,
+    ) -> Option<f64> {
+        self.registry.estimate_cost_with_cache(
+            model,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_creation_tokens,
+        )
+    }
 }
 
 async fn dispatch_chat(

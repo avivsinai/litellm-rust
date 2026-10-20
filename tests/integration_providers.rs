@@ -903,6 +903,7 @@ mod openai_compat_tests {
                 ChatContentPart::Text(ChatContentPartText {
                     kind: "text".into(),
                     text: "describe".into(),
+                    cache_control: None,
                 }),
                 ChatContentPart::ImageUrl(ChatContentPartImageUrl {
                     kind: "image_url".into(),
@@ -1619,6 +1620,161 @@ mod anthropic_tests {
             "Expected 503 in error: {}",
             err_str
         );
+    }
+
+    /// Verifies `thinking` is forwarded verbatim to the Anthropic request body.
+    #[tokio::test]
+    async fn chat_completion_forwards_thinking_to_request_body() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(body_json(json!({
+                "model": "claude-sonnet-5",
+                "messages": [{ "role": "user", "content": [{ "type": "text", "text": "Hello" }] }],
+                "max_tokens": 1024,
+                "thinking": { "type": "adaptive" }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_thinking_fwd",
+                "content": [{ "type": "text", "text": "ok" }],
+                "usage": { "input_tokens": 5, "output_tokens": 2 }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = ChatRequest {
+            thinking: Some(json!({ "type": "adaptive" })),
+            ..ChatRequest::new("claude-sonnet-5").message("user", "Hello")
+        };
+
+        let resp = anthropic::chat(&make_client(), &cfg, req).await.unwrap();
+        assert_eq!(resp.content, "ok");
+    }
+
+    /// Verifies `reasoning_effort` maps to `output_config.effort`, and that it
+    /// coexists with the `output_config.format` produced by `response_format`
+    /// when both are set on the same request.
+    #[tokio::test]
+    async fn chat_completion_maps_reasoning_effort_into_output_config_alongside_response_format() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(body_json(json!({
+                "model": "claude-sonnet-5",
+                "messages": [{ "role": "user", "content": [{ "type": "text", "text": "Return JSON" }] }],
+                "max_tokens": 1024,
+                "output_config": {
+                    "format": {
+                        "type": "json_schema",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "answer": { "type": "string" }
+                            },
+                            "required": ["answer"]
+                        }
+                    },
+                    "effort": "high"
+                }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_effort",
+                "content": [{ "type": "text", "text": "{\"answer\":\"ok\"}" }],
+                "usage": { "input_tokens": 10, "output_tokens": 5 }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let req = ChatRequest {
+            reasoning_effort: Some(json!("high")),
+            ..ChatRequest::new("claude-sonnet-5")
+                .message("user", "Return JSON")
+                .response_format(json!({
+                    "type": "json_schema",
+                    "json_schema": {
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "answer": { "type": "string" }
+                            },
+                            "required": ["answer"]
+                        }
+                    }
+                }))
+        };
+
+        let resp = anthropic::chat(&make_client(), &cfg, req).await.unwrap();
+        assert_eq!(resp.content, r#"{"answer":"ok"}"#);
+    }
+
+    /// Verifies `cache_control` on a text content part reaches the outgoing
+    /// Anthropic content block, and that cache token counts in the response
+    /// usage are reported and included in `prompt_tokens`.
+    #[tokio::test]
+    async fn chat_completion_forwards_text_part_cache_control() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(body_json(json!({
+                "model": "claude-3-5-sonnet-20241022",
+                "messages": [{
+                    "role": "user",
+                    "content": [{
+                        "type": "text",
+                        "text": "Long context to cache",
+                        "cache_control": { "type": "ephemeral" }
+                    }]
+                }],
+                "max_tokens": 1024
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_cache",
+                "content": [{ "type": "text", "text": "ok" }],
+                "usage": {
+                    "input_tokens": 5,
+                    "cache_read_input_tokens": 100,
+                    "cache_creation_input_tokens": 20,
+                    "output_tokens": 2
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let cfg = ProviderConfig {
+            base_url: Some(mock_server.uri()),
+            api_key: Some("test-key".to_string()),
+            ..Default::default()
+        };
+
+        let content = ChatMessageContent::Parts(vec![ChatContentPart::Text(ChatContentPartText {
+            kind: "text".into(),
+            text: "Long context to cache".to_string(),
+            cache_control: Some(json!({ "type": "ephemeral" })),
+        })]);
+
+        let req =
+            ChatRequest::new("claude-3-5-sonnet-20241022").message_with_content("user", content);
+
+        let resp = anthropic::chat(&make_client(), &cfg, req).await.unwrap();
+        assert_eq!(resp.content, "ok");
+        assert_eq!(resp.usage.cache_read_input_tokens, Some(100));
+        assert_eq!(resp.usage.cache_creation_input_tokens, Some(20));
+        assert_eq!(resp.usage.prompt_tokens, Some(125));
     }
 }
 

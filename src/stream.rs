@@ -160,7 +160,7 @@ where
             let data = event.data.trim();
             if data == "[DONE]" {
                 if !refusal.is_empty() {
-                    Err(LiteLLMError::Refusal { text: refusal.clone(), usage: usage.clone() })?;
+                    Err(LiteLLMError::Refusal { text: refusal.clone(), usage: Box::new(usage.clone()) })?;
                 }
                 return;
             }
@@ -187,7 +187,7 @@ where
                     .or_else(|| value.pointer("/response/incomplete_details/reason").and_then(Value::as_str))
                     .unwrap_or("Responses API did not complete the response");
                 if kind == Some("response.incomplete") {
-                    Err(LiteLLMError::Truncated { text: accumulated_content.clone(), usage: usage.clone() })?;
+                    Err(LiteLLMError::Truncated { text: accumulated_content.clone(), usage: Box::new(usage.clone()) })?;
                 }
                 Err(LiteLLMError::http(message))?;
             }
@@ -200,7 +200,7 @@ where
                     refusal = text.to_owned();
                 }
                 if !refusal.is_empty() {
-                    Err(LiteLLMError::Refusal { text: refusal.clone(), usage: usage.clone() })?;
+                    Err(LiteLLMError::Refusal { text: refusal.clone(), usage: Box::new(usage.clone()) })?;
                 }
                 continue;
             }
@@ -226,10 +226,10 @@ where
                     .filter_map(|part| part.get("refusal").and_then(Value::as_str))
                     .collect::<String>();
                 if !completed_refusal.is_empty() {
-                    Err(LiteLLMError::Refusal { text: completed_refusal, usage: usage.clone() })?;
+                    Err(LiteLLMError::Refusal { text: completed_refusal, usage: Box::new(usage.clone()) })?;
                 }
                 if !refusal.is_empty() {
-                    Err(LiteLLMError::Refusal { text: refusal.clone(), usage: usage.clone() })?;
+                    Err(LiteLLMError::Refusal { text: refusal.clone(), usage: Box::new(usage.clone()) })?;
                 }
             }
             if !content.is_empty() || reasoning.is_some() || event_usage.is_some()
@@ -238,7 +238,7 @@ where
             }
         }
         if !refusal.is_empty() {
-            Err(LiteLLMError::Refusal { text: refusal, usage })?;
+            Err(LiteLLMError::Refusal { text: refusal, usage: Box::new(usage) })?;
         }
     };
     Box::pin(s)
@@ -255,6 +255,7 @@ fn parse_responses_usage(value: &Value) -> Option<Usage> {
             .and_then(Value::as_u64),
         total_tokens: usage.get("total_tokens").and_then(Value::as_u64),
         cost_usd: None,
+        ..Default::default()
     })
 }
 
@@ -361,6 +362,7 @@ fn parse_usage(value: &Value) -> Option<Usage> {
         thoughts_tokens: None,
         total_tokens,
         cost_usd,
+        ..Default::default()
     })
 }
 
