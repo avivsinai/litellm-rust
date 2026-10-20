@@ -2633,8 +2633,9 @@ mod gemini_stream_embedding_thinking_tests {
 
     /// `reasoning_effort` becomes a `thinkingLevel` enum value on Gemini 3+ and
     /// a `thinkingBudget` on Gemini 2.x, which does not accept `thinkingLevel`.
-    /// Both ask for thoughts back with `includeThoughts`.
-    /// Thought parts come back as `reasoning`, not `content`.
+    /// `minimal` is `LOW` on Gemini 3 (the live API rejected `MINIMAL` on
+    /// Flash), and `none` on `gemini-2.5-pro` is its 128-token minimum (the
+    /// live API rejected 0). Thought parts come back as `reasoning`.
     #[tokio::test]
     async fn completion_maps_reasoning_effort_to_gemini_thinking_config() {
         let mock_server = MockServer::start().await;
@@ -2649,16 +2650,19 @@ mod gemini_stream_embedding_thinking_tests {
                 }
             }]
         });
-        for (model, thinking_config) in [
+        let cases = [
             (
                 "gemini-3-flash-preview",
+                "minimal",
                 json!({ "thinkingLevel": "LOW", "includeThoughts": true }),
             ),
             (
-                "gemini-2.5-flash",
-                json!({ "thinkingBudget": 1024, "includeThoughts": true }),
+                "gemini-2.5-pro",
+                "none",
+                json!({ "thinkingBudget": 128, "includeThoughts": false }),
             ),
-        ] {
+        ];
+        for (model, _, thinking_config) in &cases {
             Mock::given(method("POST"))
                 .and(path(format!("/models/{model}:generateContent")))
                 .and(body_partial_json(json!({
@@ -2671,9 +2675,9 @@ mod gemini_stream_embedding_thinking_tests {
         }
 
         let client = gemini_client(&mock_server);
-        for model in ["gemini/gemini-3-flash-preview", "gemini/gemini-2.5-flash"] {
-            let mut req = simple_chat_request(model);
-            req.reasoning_effort = Some(json!("low"));
+        for (model, effort, _) in cases {
+            let mut req = simple_chat_request(&format!("gemini/{model}"));
+            req.reasoning_effort = Some(json!(effort));
             let resp = client.completion(req).await.unwrap();
             assert_eq!(resp.content, "Answer.");
             assert_eq!(
