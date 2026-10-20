@@ -1630,7 +1630,7 @@ mod anthropic_tests {
         Mock::given(method("POST"))
             .and(path("/v1/messages"))
             .and(body_json(json!({
-                "model": "claude-sonnet-4.5",
+                "model": "claude-sonnet-5",
                 "messages": [{ "role": "user", "content": [{ "type": "text", "text": "Hello" }] }],
                 "max_tokens": 1024,
                 "thinking": { "type": "adaptive" }
@@ -1651,7 +1651,7 @@ mod anthropic_tests {
 
         let req = ChatRequest {
             thinking: Some(json!({ "type": "adaptive" })),
-            ..ChatRequest::new("claude-sonnet-4.5").message("user", "Hello")
+            ..ChatRequest::new("claude-sonnet-5").message("user", "Hello")
         };
 
         let resp = anthropic::chat(&make_client(), &cfg, req).await.unwrap();
@@ -1668,7 +1668,7 @@ mod anthropic_tests {
         Mock::given(method("POST"))
             .and(path("/v1/messages"))
             .and(body_json(json!({
-                "model": "claude-sonnet-4.5",
+                "model": "claude-sonnet-5",
                 "messages": [{ "role": "user", "content": [{ "type": "text", "text": "Return JSON" }] }],
                 "max_tokens": 1024,
                 "output_config": {
@@ -1701,7 +1701,7 @@ mod anthropic_tests {
 
         let req = ChatRequest {
             reasoning_effort: Some(json!("high")),
-            ..ChatRequest::new("claude-sonnet-4.5")
+            ..ChatRequest::new("claude-sonnet-5")
                 .message("user", "Return JSON")
                 .response_format(json!({
                     "type": "json_schema",
@@ -1722,7 +1722,8 @@ mod anthropic_tests {
     }
 
     /// Verifies `cache_control` on a text content part reaches the outgoing
-    /// Anthropic content block, enabling prompt caching.
+    /// Anthropic content block, and that cache token counts in the response
+    /// usage are reported and included in `prompt_tokens`.
     #[tokio::test]
     async fn chat_completion_forwards_text_part_cache_control() {
         let mock_server = MockServer::start().await;
@@ -1744,7 +1745,12 @@ mod anthropic_tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "id": "msg_cache",
                 "content": [{ "type": "text", "text": "ok" }],
-                "usage": { "input_tokens": 5, "output_tokens": 2 }
+                "usage": {
+                    "input_tokens": 5,
+                    "cache_read_input_tokens": 100,
+                    "cache_creation_input_tokens": 20,
+                    "output_tokens": 2
+                }
             })))
             .mount(&mock_server)
             .await;
@@ -1766,6 +1772,9 @@ mod anthropic_tests {
 
         let resp = anthropic::chat(&make_client(), &cfg, req).await.unwrap();
         assert_eq!(resp.content, "ok");
+        assert_eq!(resp.usage.cache_read_input_tokens, Some(100));
+        assert_eq!(resp.usage.cache_creation_input_tokens, Some(20));
+        assert_eq!(resp.usage.prompt_tokens, Some(125));
     }
 }
 

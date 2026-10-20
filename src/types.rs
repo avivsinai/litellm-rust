@@ -289,6 +289,12 @@ pub struct Usage {
     pub thoughts_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
     pub cost_usd: Option<f64>,
+    /// Prompt tokens read from the provider's prompt cache. Included in
+    /// `prompt_tokens`.
+    pub cache_read_input_tokens: Option<u64>,
+    /// Prompt tokens written to the provider's prompt cache. Included in
+    /// `prompt_tokens`.
+    pub cache_creation_input_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

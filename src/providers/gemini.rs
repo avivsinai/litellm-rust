@@ -479,6 +479,7 @@ fn parse_usage(resp: &Value) -> Usage {
             thoughts_tokens: meta.get("thoughtsTokenCount").and_then(|v| v.as_u64()),
             total_tokens: meta.get("totalTokenCount").and_then(|v| v.as_u64()),
             cost_usd: None,
+            ..Default::default()
         };
     }
     Usage::default()

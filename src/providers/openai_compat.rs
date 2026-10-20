@@ -446,6 +446,7 @@ pub async fn responses_chat(
                 .and_then(Value::as_u64),
             total_tokens: usage.get("total_tokens").and_then(Value::as_u64),
             cost_usd: usage.get("cost").and_then(Value::as_f64),
+            ..Default::default()
         })
         .unwrap_or_default();
     let refusal = raw
@@ -466,7 +467,7 @@ pub async fn responses_chat(
     if !refusal.is_empty() {
         return Err(LiteLLMError::Refusal {
             text: refusal,
-            usage,
+            usage: Box::new(usage),
         });
     }
     if matches!(raw.get("status").and_then(Value::as_str), Some("failed")) {
@@ -490,7 +491,7 @@ pub async fn responses_chat(
             } else {
                 content.clone()
             },
-            usage,
+            usage: Box::new(usage),
         });
     }
     let calls: Vec<Value> = raw.get("output").and_then(Value::as_array).into_iter().flatten()
@@ -920,6 +921,7 @@ fn map_usage(usage: Option<OpenAIUsage>) -> Usage {
         thoughts_tokens: u.completion_tokens_details.and_then(|d| d.reasoning_tokens),
         total_tokens: u.total_tokens,
         cost_usd: parse_cost(u.cost.as_ref()),
+        ..Default::default()
     })
 }
 

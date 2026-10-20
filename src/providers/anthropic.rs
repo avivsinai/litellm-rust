@@ -348,11 +348,11 @@ fn validate_stop_reason(resp: &Value) -> Result<()> {
     match resp.get("stop_reason").and_then(|v| v.as_str()) {
         Some("refusal") => Err(LiteLLMError::Refusal {
             text: extract_text(resp),
-            usage: parse_usage(resp),
+            usage: Box::new(parse_usage(resp)),
         }),
         Some("max_tokens") => Err(LiteLLMError::Truncated {
             text: extract_text(resp),
-            usage: parse_usage(resp),
+            usage: Box::new(parse_usage(resp)),
         }),
         _ => Ok(()),
     }
@@ -361,12 +361,20 @@ fn validate_stop_reason(resp: &Value) -> Result<()> {
 fn parse_usage(resp: &Value) -> Usage {
     let usage = resp.get("usage").and_then(|v| v.as_object());
     if let Some(u) = usage {
+        let input = u.get("input_tokens").and_then(Value::as_u64);
+        let cache_read = u.get("cache_read_input_tokens").and_then(Value::as_u64);
+        let cache_creation = u.get("cache_creation_input_tokens").and_then(Value::as_u64);
+        // Anthropic's input_tokens excludes cached tokens; prompt_tokens is the total.
+        let prompt_tokens = [input, cache_read, cache_creation]
+            .into_iter()
+            .flatten()
+            .reduce(|a, b| a + b);
         return Usage {
-            prompt_tokens: u.get("input_tokens").and_then(|v| v.as_u64()),
-            completion_tokens: u.get("output_tokens").and_then(|v| v.as_u64()),
-            thoughts_tokens: None,
-            total_tokens: None,
-            cost_usd: None,
+            prompt_tokens,
+            completion_tokens: u.get("output_tokens").and_then(Value::as_u64),
+            cache_read_input_tokens: cache_read,
+            cache_creation_input_tokens: cache_creation,
+            ..Default::default()
         };
     }
     Usage::default()
