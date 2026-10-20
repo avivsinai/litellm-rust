@@ -2,17 +2,18 @@ use crate::config::ProviderConfig;
 use crate::error::{LiteLLMError, Result};
 use crate::http::send_json;
 use crate::providers::{merge_extra_body, resolve_api_key};
+use crate::stream::{parse_gemini_sse_stream, ChatStream};
 use crate::types::{
     ChatContentPart, ChatContentPartFile, ChatContentPartImageUrl, ChatContentPartInputAudio,
     ChatContentPartText, ChatFile, ChatImageUrl, ChatInputAudio, ChatMessage, ChatMessageContent,
-    ChatRequest, ChatResponse, ImageData, ImageEditRequest, ImageInputData, ImageRequest,
-    ImageResponse, Usage, VideoRequest, VideoResponse,
+    ChatRequest, ChatResponse, EmbeddingRequest, EmbeddingResponse, ImageData, ImageEditRequest,
+    ImageInputData, ImageRequest, ImageResponse, Reasoning, Usage, VideoRequest, VideoResponse,
 };
 use base64::{engine::general_purpose, Engine as _};
 use mime_guess::MimeGuess;
 use reqwest::header::CONTENT_TYPE;
 use reqwest::Client;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::env;
 use tokio::time::{sleep, Duration};
 
@@ -28,12 +29,90 @@ pub async fn chat(client: &Client, cfg: &ProviderConfig, req: ChatRequest) -> Re
         .ok_or_else(|| LiteLLMError::Config("base_url required".into()))?;
     let key = resolve_api_key(cfg)?
         .ok_or_else(|| LiteLLMError::MissingApiKey("GEMINI_API_KEY".into()))?;
-    let model = req.model.trim_start_matches("models/");
+    let model = req.model.trim_start_matches("models/").to_string();
     let url = format!(
         "{}/models/{}:generateContent",
         base.trim_end_matches('/'),
         model
     );
+    let body = build_chat_body(client, req, &model).await?;
+
+    let mut builder = client.post(url).header("x-goog-api-key", key).json(&body);
+    for (k, v) in &cfg.extra_headers {
+        builder = builder.header(k, v);
+    }
+
+    let (resp, _headers) = send_json::<Value>(builder).await?;
+    let (content, reasoning) = split_text_and_reasoning(&resp);
+    let usage = parse_usage(&resp);
+    let debug = env::var("LITELLM_GEMINI_DEBUG").ok().as_deref() == Some("1")
+        || env::var("YOETZ_GEMINI_DEBUG").ok().as_deref() == Some("1");
+    if debug {
+        if let Ok(pretty) = serde_json::to_string_pretty(&resp) {
+            eprintln!("litellm-rust gemini raw response:\n{pretty}");
+        }
+    }
+
+    let tool_calls = extract_gemini_tool_calls(&resp);
+    Ok(ChatResponse {
+        content,
+        reasoning,
+        tool_calls,
+        usage,
+        response_id: None,
+        header_cost: None,
+        raw: if debug { Some(resp) } else { None },
+    })
+}
+
+/// Stream a chat completion through `streamGenerateContent?alt=sse`.
+pub async fn chat_stream(
+    client: &Client,
+    cfg: &ProviderConfig,
+    req: ChatRequest,
+) -> Result<ChatStream> {
+    let base = cfg
+        .base_url
+        .clone()
+        .ok_or_else(|| LiteLLMError::Config("base_url required".into()))?;
+    let key = resolve_api_key(cfg)?
+        .ok_or_else(|| LiteLLMError::MissingApiKey("GEMINI_API_KEY".into()))?;
+    let model = req.model.trim_start_matches("models/").to_string();
+    let url = format!(
+        "{}/models/{}:streamGenerateContent",
+        base.trim_end_matches('/'),
+        model
+    );
+    let body = build_chat_body(client, req, &model).await?;
+
+    let mut builder = client
+        .post(url)
+        .query(&[("alt", "sse")])
+        .header("x-goog-api-key", key)
+        .header("accept", "text/event-stream")
+        .json(&body);
+    for (k, v) in &cfg.extra_headers {
+        builder = builder.header(k, v);
+    }
+
+    let resp = builder.send().await.map_err(LiteLLMError::from)?;
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.map_err(LiteLLMError::from)?;
+        return Err(LiteLLMError::http(format!(
+            "http {}: {}",
+            status.as_u16(),
+            text
+        )));
+    }
+
+    Ok(parse_gemini_sse_stream(resp.bytes_stream()))
+}
+
+/// Build the `generateContent` / `streamGenerateContent` request body. Both
+/// endpoints take the same `GenerateContentRequest` shape.
+async fn build_chat_body(client: &Client, req: ChatRequest, model: &str) -> Result<Value> {
+    let generation_config = build_generation_config(&req, model);
 
     let mut messages = req.messages;
     let system_instruction = extract_system_instruction(&mut messages)?;
@@ -55,15 +134,6 @@ pub async fn chat(client: &Client, cfg: &ProviderConfig, req: ChatRequest) -> Re
     if !system_instruction.is_empty() {
         body["system_instruction"] = serde_json::json!({ "parts": system_instruction });
     }
-
-    // Build generationConfig safely without unwrap
-    let mut generation_config = serde_json::Map::new();
-    if let Some(temp) = req.temperature {
-        generation_config.insert("temperature".to_string(), serde_json::json!(temp));
-    }
-    if let Some(max_tokens) = req.max_tokens {
-        generation_config.insert("maxOutputTokens".to_string(), serde_json::json!(max_tokens));
-    }
     if !generation_config.is_empty() {
         body["generationConfig"] = Value::Object(generation_config);
     }
@@ -72,6 +142,148 @@ pub async fn chat(client: &Client, cfg: &ProviderConfig, req: ChatRequest) -> Re
         req.extra_body.as_ref(),
         &["contents", "system_instruction", "generationConfig"],
     )?;
+    Ok(body)
+}
+
+fn build_generation_config(req: &ChatRequest, model: &str) -> Map<String, Value> {
+    let mut generation_config = Map::new();
+    if let Some(temp) = req.temperature {
+        generation_config.insert("temperature".to_string(), serde_json::json!(temp));
+    }
+    if let Some(max_tokens) = req.max_tokens {
+        generation_config.insert("maxOutputTokens".to_string(), serde_json::json!(max_tokens));
+    }
+    if let Some(thinking_config) =
+        build_thinking_config(req.thinking.as_ref(), req.reasoning_effort.as_ref(), model)
+    {
+        generation_config.insert("thinkingConfig".to_string(), thinking_config);
+    }
+    generation_config
+}
+
+/// Map `thinking` / `reasoning_effort` onto Gemini's
+/// `generationConfig.thinkingConfig` (`includeThoughts`, `thinkingBudget`,
+/// `thinkingLevel`; see <https://ai.google.dev/gemini-api/docs/thinking>).
+///
+/// - `thinking` as an object is Gemini-native (for example
+///   `{"thinkingBudget": 1024}`) and is sent as is.
+/// - `thinking` as a bool sets `includeThoughts`.
+/// - `thinking` as a number sets `thinkingBudget`.
+/// - `reasoning_effort` is used only when `thinking` did not already set a
+///   budget or a level, because Gemini rejects both in one request. Gemini 3
+///   and newer take it as `thinkingLevel` (lowercase, as in the REST docs).
+///   Gemini 1.x/2.x models do not accept `thinkingLevel`, so the effort maps to
+///   a `thinkingBudget` with the same token values as Python LiteLLM.
+fn build_thinking_config(
+    thinking: Option<&Value>,
+    reasoning_effort: Option<&Value>,
+    model: &str,
+) -> Option<Value> {
+    let mut cfg = Map::new();
+    match thinking {
+        Some(Value::Object(obj)) => cfg.extend(obj.clone()),
+        Some(Value::Bool(b)) => {
+            cfg.insert("includeThoughts".to_string(), Value::Bool(*b));
+        }
+        Some(Value::Number(n)) => {
+            cfg.insert("thinkingBudget".to_string(), Value::Number(n.clone()));
+        }
+        _ => {}
+    }
+    let has_level_or_budget =
+        cfg.contains_key("thinkingLevel") || cfg.contains_key("thinkingBudget");
+    if let (false, Some(effort)) = (has_level_or_budget, reasoning_effort) {
+        let budget = effort
+            .as_str()
+            .filter(|_| is_pre_gemini_3(model))
+            .and_then(effort_to_thinking_budget);
+        match budget {
+            Some(budget) => cfg.insert("thinkingBudget".to_string(), budget.into()),
+            None => cfg.insert("thinkingLevel".to_string(), effort.clone()),
+        };
+    }
+    (!cfg.is_empty()).then_some(Value::Object(cfg))
+}
+
+/// Token budgets used by Python LiteLLM for Gemini 2.x `reasoning_effort`.
+fn effort_to_thinking_budget(effort: &str) -> Option<u32> {
+    match effort {
+        "none" | "disable" => Some(0),
+        "minimal" => Some(128),
+        "low" => Some(1024),
+        "medium" => Some(2048),
+        "high" => Some(4096),
+        _ => None,
+    }
+}
+
+/// True for `gemini-1.x`, `gemini-2.x`, `gemini-exp*`, and the old
+/// `gemini-pro` / `gemini-flash` names. The `*-latest` aliases point at newer
+/// models. This is the same check as Python LiteLLM's
+/// `_is_gemini_3_or_newer`, inverted.
+fn is_pre_gemini_3(model: &str) -> bool {
+    let name = model.rsplit('/').next().unwrap_or(model).to_lowercase();
+    let Some(rest) = name.strip_prefix("gemini-") else {
+        return false;
+    };
+    let head = rest.split('-').next().unwrap_or_default();
+    match head {
+        "exp" => true,
+        "pro" | "flash" => !matches!(
+            rest,
+            "pro-latest" | "flash-latest" | "pro-lite-latest" | "flash-lite-latest"
+        ),
+        _ => {
+            let (major, minor) = head.split_once('.').unwrap_or((head, "0"));
+            matches!(major, "1" | "2")
+                && !minor.is_empty()
+                && minor.chars().all(|c| c.is_ascii_digit())
+        }
+    }
+}
+
+/// Embed text through `embedContent` (one input) or `batchEmbedContents`
+/// (an array of inputs).
+pub async fn embeddings(
+    client: &Client,
+    cfg: &ProviderConfig,
+    req: EmbeddingRequest,
+) -> Result<EmbeddingResponse> {
+    let base = cfg
+        .base_url
+        .clone()
+        .ok_or_else(|| LiteLLMError::Config("base_url required".into()))?;
+    let key = resolve_api_key(cfg)?
+        .ok_or_else(|| LiteLLMError::MissingApiKey("GEMINI_API_KEY".into()))?;
+    let model = req.model.trim_start_matches("models/").to_string();
+    let inputs = embedding_inputs(&req.input)?;
+    if inputs.is_empty() {
+        return Err(LiteLLMError::Config(
+            "embeddings input must not be empty".into(),
+        ));
+    }
+    let content = |text: &str| serde_json::json!({ "parts": [{ "text": text }] });
+
+    let single = inputs.len() == 1;
+    let (method, mut body, core_keys) = if single {
+        (
+            "embedContent",
+            serde_json::json!({ "content": content(&inputs[0]) }),
+            &["content"],
+        )
+    } else {
+        let requests: Vec<Value> = inputs
+            .iter()
+            .map(|text| serde_json::json!({ "model": format!("models/{model}"), "content": content(text) }))
+            .collect();
+        (
+            "batchEmbedContents",
+            serde_json::json!({ "requests": requests }),
+            &["requests"],
+        )
+    };
+    merge_extra_body(&mut body, req.extra_body.as_ref(), core_keys)?;
+    let url = format!("{}/models/{}:{}", base.trim_end_matches('/'), model, method);
 
     let mut builder = client.post(url).header("x-goog-api-key", key).json(&body);
     for (k, v) in &cfg.extra_headers {
@@ -79,26 +291,67 @@ pub async fn chat(client: &Client, cfg: &ProviderConfig, req: ChatRequest) -> Re
     }
 
     let (resp, _headers) = send_json::<Value>(builder).await?;
-    let content = extract_text(&resp);
-    let usage = parse_usage(&resp);
-    let debug = env::var("LITELLM_GEMINI_DEBUG").ok().as_deref() == Some("1")
-        || env::var("YOETZ_GEMINI_DEBUG").ok().as_deref() == Some("1");
-    if debug {
-        if let Ok(pretty) = serde_json::to_string_pretty(&resp) {
-            eprintln!("litellm-rust gemini raw response:\n{pretty}");
-        }
-    }
+    let vectors = if single {
+        vec![embedding_values(resp.get("embedding"))]
+    } else {
+        resp.get("embeddings")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| embedding_values(Some(item)))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    // Embedding usage only reports `promptTokenCount`.
+    let usage = Usage {
+        prompt_tokens: resp
+            .pointer("/usageMetadata/promptTokenCount")
+            .and_then(Value::as_u64),
+        ..Usage::default()
+    };
 
-    let tool_calls = extract_gemini_tool_calls(&resp);
-    Ok(ChatResponse {
-        content,
-        reasoning: None,
-        tool_calls,
+    Ok(EmbeddingResponse {
+        vectors,
         usage,
-        response_id: None,
-        header_cost: None,
-        raw: if debug { Some(resp) } else { None },
+        raw: None,
     })
+}
+
+/// Read `values` from a Gemini `ContentEmbedding`.
+fn embedding_values(embedding: Option<&Value>) -> Vec<f32> {
+    embedding
+        .and_then(|e| e.get("values"))
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_f64)
+                .map(|f| f as f32)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Accepts the OpenAI-style embeddings `input`: one string or an array of
+/// strings. Gemini embedding requests here are text only.
+fn embedding_inputs(input: &Value) -> Result<Vec<String>> {
+    match input {
+        Value::String(s) => Ok(vec![s.clone()]),
+        Value::Array(items) => items
+            .iter()
+            .map(|item| {
+                item.as_str().map(str::to_string).ok_or_else(|| {
+                    LiteLLMError::Config(
+                        "gemini embeddings input array must contain strings".into(),
+                    )
+                })
+            })
+            .collect(),
+        _ => Err(LiteLLMError::Config(
+            "gemini embeddings input must be a string or array of strings".into(),
+        )),
+    }
 }
 
 /// Map Gemini `functionCall` parts to the OpenAI tool_calls shape. Gemini emits
@@ -450,28 +703,30 @@ fn extract_images_from_predictions(resp: &Value) -> Vec<ImageData> {
     images
 }
 
-fn extract_text(resp: &Value) -> String {
-    if let Some(candidates) = resp.get("candidates").and_then(|v| v.as_array()) {
-        if let Some(first) = candidates.first() {
-            if let Some(parts) = first
-                .get("content")
-                .and_then(|v| v.get("parts"))
-                .and_then(|v| v.as_array())
-            {
-                let mut text = String::new();
-                for part in parts {
-                    if let Some(piece) = part.get("text").and_then(|v| v.as_str()) {
-                        text.push_str(piece);
-                    }
-                }
-                return text;
-            }
+/// Split the first candidate's text parts into visible content and
+/// `"thought": true` parts (returned when `includeThoughts` is set) into
+/// reasoning. Used for both `generateContent` responses and each
+/// `streamGenerateContent` event.
+pub(crate) fn split_text_and_reasoning(resp: &Value) -> (String, Option<Reasoning>) {
+    let mut content = String::new();
+    let mut thoughts = String::new();
+    let parts = resp
+        .pointer("/candidates/0/content/parts")
+        .and_then(Value::as_array);
+    for part in parts.into_iter().flatten() {
+        let Some(text) = part.get("text").and_then(Value::as_str) else {
+            continue;
+        };
+        if part.get("thought").and_then(Value::as_bool) == Some(true) {
+            thoughts.push_str(text);
+        } else {
+            content.push_str(text);
         }
     }
-    String::new()
+    (content, Reasoning::from_text(thoughts))
 }
 
-fn parse_usage(resp: &Value) -> Usage {
+pub(crate) fn parse_usage(resp: &Value) -> Usage {
     if let Some(meta) = resp.get("usageMetadata").and_then(|v| v.as_object()) {
         return Usage {
             prompt_tokens: meta.get("promptTokenCount").and_then(|v| v.as_u64()),

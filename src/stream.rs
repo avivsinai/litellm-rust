@@ -1,5 +1,6 @@
 use crate::error::{LiteLLMError, Result};
 use crate::http::MAX_SSE_BUFFER_SIZE;
+use crate::providers::gemini;
 use crate::types::{Reasoning, Usage};
 use bytes::Bytes;
 use futures_util::stream::{Stream, StreamExt, TryStreamExt};
@@ -181,6 +182,39 @@ where
                     };
                 }
             }
+        }
+    };
+    Box::pin(s)
+}
+
+/// Parse a Gemini `streamGenerateContent?alt=sse` stream into chat chunks.
+///
+/// Each event's `data:` payload is a full `GenerateContentResponse` with the
+/// parts produced since the previous event. There is no `[DONE]` sentinel; the
+/// stream ends when the HTTP body closes. `"thought": true` parts become
+/// `reasoning`. `functionCall` parts stay in `raw`, as in the other parsers.
+pub fn parse_gemini_sse_stream<S>(stream: S) -> ChatStream
+where
+    S: Stream<Item = std::result::Result<Bytes, reqwest::Error>> + Send + Unpin + 'static,
+{
+    let s = async_stream::try_stream! {
+        let mut events = sse_event_stream(stream);
+        while let Some(event) = events.next().await {
+            let event = event?;
+            let data = event.data.trim();
+            if data.is_empty() {
+                continue;
+            }
+            let value: Value = serde_json::from_str(data)
+                .map_err(|e| LiteLLMError::Parse(e.to_string()))?;
+            let usage = value.get("usageMetadata").map(|_| gemini::parse_usage(&value));
+            let (content, reasoning) = gemini::split_text_and_reasoning(&value);
+            yield ChatStreamChunk {
+                content,
+                reasoning,
+                raw: Some(value),
+                usage,
+            };
         }
     };
     Box::pin(s)

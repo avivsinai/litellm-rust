@@ -65,9 +65,7 @@ impl LiteLLM {
             ProviderKind::Anthropic => {
                 anthropic::chat_stream(&self.client, &resolved.config, req).await
             }
-            _ => Err(LiteLLMError::Unsupported(
-                "streaming not supported for provider".into(),
-            )),
+            ProviderKind::Gemini => gemini::chat_stream(&self.client, &resolved.config, req).await,
         }
     }
 
@@ -78,7 +76,8 @@ impl LiteLLM {
             ProviderKind::OpenAICompatible => {
                 openai_compat::embeddings(&self.client, &resolved.config, req).await
             }
-            _ => Err(LiteLLMError::Unsupported(
+            ProviderKind::Gemini => gemini::embeddings(&self.client, &resolved.config, req).await,
+            ProviderKind::Anthropic => Err(LiteLLMError::Unsupported(
                 "embeddings not supported for provider".into(),
             )),
         }

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Stream Gemini chat completions with `stream_completion`. Requests go to
+  `streamGenerateContent?alt=sse`.
+- Create Gemini embeddings with `embedding`. One input uses `embedContent`; an
+  array of inputs uses `batchEmbedContents`.
+- Send `thinking` and `reasoning_effort` to Gemini as
+  `generationConfig.thinkingConfig`. Gemini 3 and newer get `thinkingLevel`;
+  Gemini 2.x gets a `thinkingBudget`. Thought parts come back as `reasoning`,
+  not as `content`.
+
 ## [0.3.0] - 2026-07-11
 
 ### Breaking Changes

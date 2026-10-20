@@ -2228,3 +2228,157 @@ mod video_generation_tests {
         );
     }
 }
+
+// =============================================================================
+// Gemini streaming, embeddings, and thinking tests
+// =============================================================================
+
+mod gemini_stream_embedding_thinking_tests {
+    use super::*;
+    use futures_util::StreamExt;
+    use litellm_rust::config::ProviderKind;
+    use litellm_rust::types::EmbeddingRequest;
+    use litellm_rust::LiteLLM;
+    use wiremock::matchers::{body_partial_json, query_param};
+
+    fn gemini_client(server: &MockServer) -> LiteLLM {
+        LiteLLM::new().unwrap().with_provider(
+            "gemini",
+            ProviderConfig {
+                kind: ProviderKind::Gemini,
+                base_url: Some(server.uri()),
+                api_key: Some("test-key".to_string()),
+                ..Default::default()
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn stream_completion_streams_gemini_sse() {
+        let mock_server = MockServer::start().await;
+        let sse = concat!(
+            "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[",
+            "{\"text\":\"Thinking.\",\"thought\":true},{\"text\":\"Hello\"}]}}]}\r\n\r\n",
+            "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[",
+            "{\"text\":\" world\"}]},\"finishReason\":\"STOP\"}],",
+            "\"usageMetadata\":{\"promptTokenCount\":4,\"candidatesTokenCount\":2,",
+            "\"thoughtsTokenCount\":3,\"totalTokenCount\":9}}\r\n\r\n",
+        );
+        Mock::given(method("POST"))
+            .and(path("/models/gemini-2.5-flash:streamGenerateContent"))
+            .and(query_param("alt", "sse"))
+            .and(header("x-goog-api-key", "test-key"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(sse),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let chunks: Vec<_> = gemini_client(&mock_server)
+            .stream_completion(simple_chat_request("gemini/gemini-2.5-flash"))
+            .await
+            .unwrap()
+            .map(|chunk| chunk.unwrap())
+            .collect()
+            .await;
+
+        let text: String = chunks.iter().map(|c| c.content.as_str()).collect();
+        assert_eq!(text, "Hello world");
+        assert_eq!(
+            chunks[0].reasoning.as_ref().and_then(|r| r.text()),
+            Some("Thinking.".to_string())
+        );
+        let usage = chunks[1].usage.as_ref().expect("usage on last chunk");
+        assert_eq!(usage.prompt_tokens, Some(4));
+        assert_eq!(usage.thoughts_tokens, Some(3));
+        assert_eq!(usage.total_tokens, Some(9));
+    }
+
+    #[tokio::test]
+    async fn embedding_batches_gemini_inputs() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/models/gemini-embedding-001:batchEmbedContents"))
+            .and(header("x-goog-api-key", "test-key"))
+            .and(body_json(json!({
+                "requests": [
+                    {
+                        "model": "models/gemini-embedding-001",
+                        "content": { "parts": [{ "text": "Hello" }] }
+                    },
+                    {
+                        "model": "models/gemini-embedding-001",
+                        "content": { "parts": [{ "text": "World" }] }
+                    }
+                ]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "embeddings": [
+                    { "values": [0.1, 0.2] },
+                    { "values": [0.3, 0.4] }
+                ],
+                "usageMetadata": { "promptTokenCount": 2 }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let resp = gemini_client(&mock_server)
+            .embedding(EmbeddingRequest {
+                model: "gemini/gemini-embedding-001".to_string(),
+                input: json!(["Hello", "World"]),
+                extra_body: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(resp.vectors, vec![vec![0.1, 0.2], vec![0.3, 0.4]]);
+        assert_eq!(resp.usage.prompt_tokens, Some(2));
+    }
+
+    /// `reasoning_effort` becomes `thinkingLevel` on Gemini 3+ and a
+    /// `thinkingBudget` on Gemini 2.x, which does not accept `thinkingLevel`.
+    /// Thought parts come back as `reasoning`, not `content`.
+    #[tokio::test]
+    async fn completion_maps_reasoning_effort_to_gemini_thinking_config() {
+        let mock_server = MockServer::start().await;
+        let response = json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [
+                        { "text": "Plan.", "thought": true },
+                        { "text": "Answer." }
+                    ]
+                }
+            }]
+        });
+        for (model, thinking_config) in [
+            ("gemini-3-flash-preview", json!({ "thinkingLevel": "low" })),
+            ("gemini-2.5-flash", json!({ "thinkingBudget": 1024 })),
+        ] {
+            Mock::given(method("POST"))
+                .and(path(format!("/models/{model}:generateContent")))
+                .and(body_partial_json(json!({
+                    "generationConfig": { "thinkingConfig": thinking_config }
+                })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+                .expect(1)
+                .mount(&mock_server)
+                .await;
+        }
+
+        let client = gemini_client(&mock_server);
+        for model in ["gemini/gemini-3-flash-preview", "gemini/gemini-2.5-flash"] {
+            let mut req = simple_chat_request(model);
+            req.reasoning_effort = Some(json!("low"));
+            let resp = client.completion(req).await.unwrap();
+            assert_eq!(resp.content, "Answer.");
+            assert_eq!(
+                resp.reasoning.and_then(|r| r.text()),
+                Some("Plan.".to_string())
+            );
+        }
+    }
+}
