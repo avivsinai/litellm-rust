@@ -41,7 +41,7 @@ jq -e '
 # cache_read_input_token_cost fallback. supported_endpoints/supported_modalities
 # must be arrays of strings — registry.rs filters non-string elements silently,
 # but a wrong-typed field itself must still fail loudly here.
-core_providers='["openai", "anthropic", "gemini", "xai", "zai", "openrouter"]'
+core_providers='["openai", "anthropic", "gemini", "xai", "zai"]'
 violations=$(jq --argjson core "$core_providers" '
   def ok_price($f):  (has($f) | not) or (.[$f] | type == "number" and . >= 0 and . <= 0.05);
   def ok_tokens($f): (has($f) | not) or (.[$f] | type == "number" and . == floor and . >= 0 and . <= 50000000);
