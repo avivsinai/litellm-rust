@@ -20,11 +20,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Read prompt-cache prices, capability flags, and supported endpoints and
-  modalities from the embedded model registry into `ModelPricing`.
+  modalities from the embedded model registry into `ModelPricing`. When
+  `cache_read_input_token_cost` is absent, the cache-read price falls back to
+  `input_cost_per_token_cache_hit`. No current registry entry needs this
+  fallback; it guards against upstream regressions.
 - Add `Registry::estimate_cost_with_cache` and
   `LiteLLM::estimate_cost_with_cache`. They price cache-read and
   cache-creation tokens at the model's cache rates, and use the input rate
-  when the model has no cache rate.
+  when the model has no cache rate. Cache-creation tokens use the base
+  (5-minute TTL) write rate; 1-hour TTL writes and long-context tier rates
+  are not modeled. `input_tokens` must exclude cached tokens: pass
+  Anthropic counts directly, and subtract the cached count from
+  OpenAI-compatible and Gemini prompt counts first.
 
 ## [0.4.1] - 2026-10-20
 

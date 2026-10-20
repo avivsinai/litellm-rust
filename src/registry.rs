@@ -9,10 +9,12 @@ pub struct ModelPricing {
     pub input_cost_per_1k: Option<f64>,
     pub output_cost_per_1k: Option<f64>,
     /// Cost per 1k tokens read from the prompt cache, converted from the
-    /// upstream `cache_read_input_token_cost` per-token field (falling back
-    /// to the equivalent `input_cost_per_token_cache_hit` field some vendors
-    /// publish instead) using the same per-token -> per-1k convention as
-    /// `input_cost_per_1k`.
+    /// upstream `cache_read_input_token_cost` per-token field using the same
+    /// per-token -> per-1k convention as `input_cost_per_1k`. When that field
+    /// is absent, the equivalent `input_cost_per_token_cache_hit` field is
+    /// read instead. No current registry entry needs this fallback (entries
+    /// that publish the cache-hit field also publish the cache-read field);
+    /// it guards against an upstream regression that drops the latter.
     pub cache_read_cost_per_1k: Option<f64>,
     /// Cost per 1k tokens written to the prompt cache, converted from the
     /// upstream `cache_creation_input_token_cost` per-token field.
@@ -153,24 +155,34 @@ impl Registry {
     /// providers bill uncached-equivalent tokens at the input rate whenever
     /// they don't publish a discounted cache rate.
     ///
+    /// Cache-creation tokens are priced at the base cache-write rate, which
+    /// is the 5-minute TTL rate. Writes with a 1-hour TTL and long-context
+    /// tier rates (for example `*_above_200k_tokens` prices) are not modeled,
+    /// so the estimate is low for those requests.
+    ///
     /// # Token accounting contract
     ///
     /// `input_tokens`, `cache_read_tokens`, and `cache_creation_tokens` must
     /// be disjoint counts that sum to the total prompt tokens billed —
     /// `input_tokens` must **exclude** any tokens already counted in
-    /// `cache_read_tokens` or `cache_creation_tokens`. This matches
-    /// Anthropic's `usage` shape directly: `input_tokens` there already
-    /// excludes `cache_read_input_tokens` / `cache_creation_input_tokens`,
-    /// which are reported as separate fields.
+    /// `cache_read_tokens` or `cache_creation_tokens`.
     ///
-    /// It does **not** match OpenAI's `usage` shape as-is: OpenAI's
-    /// `prompt_tokens` already includes cached tokens, and
-    /// `prompt_tokens_details.cached_tokens` is a breakdown subset of it, not
-    /// an additive count. Callers feeding OpenAI-shaped usage into this
-    /// function must first subtract `cached_tokens` from `prompt_tokens`
-    /// before passing the result as `input_tokens`, or the cached portion
-    /// will be double-counted (billed once at the input rate and again at
-    /// the cache rate).
+    /// Providers report prompt tokens in different shapes, and the crate's
+    /// [`Usage`](crate::types::Usage) `prompt_tokens` keeps each provider's
+    /// shape as reported:
+    ///
+    /// - **Anthropic**: `input_tokens` already excludes
+    ///   `cache_read_input_tokens` and `cache_creation_input_tokens`, which
+    ///   are separate fields. Pass these counts directly.
+    /// - **OpenAI-compatible**: `prompt_tokens` (or `input_tokens` on the
+    ///   Responses API) includes cached tokens; `cached_tokens` in the
+    ///   details object is a subset of it, not an additive count.
+    /// - **Gemini**: `promptTokenCount` includes `cachedContentTokenCount`.
+    ///
+    /// For OpenAI-compatible and Gemini usage, subtract the cached count from
+    /// the prompt count before you pass it as `input_tokens`. If you do not,
+    /// the cached tokens are billed twice: once at the input rate and once
+    /// at the cache rate.
     pub fn estimate_cost_with_cache(
         &self,
         model: &str,
@@ -317,8 +329,9 @@ mod tests {
 
     #[test]
     fn falls_back_to_cache_hit_field_when_cache_read_cost_is_absent() {
-        // Some upstream vendors (e.g. deepseek/deepseek-coder) publish only
-        // `input_cost_per_token_cache_hit` with no `cache_read_input_token_cost`.
+        // No current registry entry publishes only
+        // `input_cost_per_token_cache_hit`; this guards the fallback against an
+        // upstream regression that drops `cache_read_input_token_cost`.
         let registry = Registry::from_json_str(
             r#"{
                 "sample_spec": {},

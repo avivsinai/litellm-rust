@@ -151,8 +151,9 @@ impl LiteLLM {
 
     /// See [`Registry::estimate_cost_with_cache`] for the token-accounting
     /// contract: `input_tokens` must exclude `cache_read_tokens` and
-    /// `cache_creation_tokens` (Anthropic's `usage` shape already does this;
-    /// OpenAI's `prompt_tokens` does not, so subtract `cached_tokens` first).
+    /// `cache_creation_tokens`. Anthropic's `input_tokens` already does this.
+    /// OpenAI-compatible and Gemini prompt counts include cached tokens, so
+    /// subtract the cached count first.
     pub fn estimate_cost_with_cache(
         &self,
         model: &str,
