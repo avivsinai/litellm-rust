@@ -7,16 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Gemini thought parts (`"thought": true`) now come back in
+  `ChatResponse.reasoning` and `ChatStreamChunk.reasoning`. Before, their text
+  was part of `content`.
+- Gemini requests now send `thinking` and `reasoning_effort`; before, Gemini
+  ignored both. A `reasoning_effort` other than `none`, `disable`, `minimal`,
+  `low`, `medium` or `high`, or a `thinking.type` other than `enabled` or
+  `disabled`, now returns `LiteLLMError::Config`.
+- A Gemini `thinking` object with a `type` key
+  (`{"type": "enabled", "budget_tokens": N}`) is now mapped to Gemini fields
+  (`includeThoughts`, plus `thinkingBudget` before Gemini 3). An object without
+  `type` is sent as is.
+
 ### Added
 
 - Stream Gemini chat completions with `stream_completion`. Requests go to
-  `streamGenerateContent?alt=sse`.
+  `streamGenerateContent?alt=sse`. Only the chunk with the `finishReason`
+  carries `usage`.
 - Create Gemini embeddings with `embedding`. One input uses `embedContent`; an
-  array of inputs uses `batchEmbedContents`.
+  array of inputs uses `batchEmbedContents`, and `extra_body` fields go on each
+  batch item. A response with a missing vector, or a vector count that does not
+  match the input count, returns `LiteLLMError::Parse`.
 - Send `thinking` and `reasoning_effort` to Gemini as
-  `generationConfig.thinkingConfig`. Gemini 3 and newer get `thinkingLevel`;
-  Gemini 2.x gets a `thinkingBudget`. Thought parts come back as `reasoning`,
-  not as `content`.
+  `generationConfig.thinkingConfig`. On Gemini 3 and newer, `reasoning_effort`
+  becomes `thinkingLevel`: `low`, `medium`, `high` become `LOW`, `MEDIUM`,
+  `HIGH`; `minimal`, `none` and `disable` become `MINIMAL` on Flash models and
+  `LOW` on other models. Older Gemini models, and models without the `gemini-`
+  prefix such as Gemma, get a `thinkingBudget` and never a `thinkingLevel`.
+  `includeThoughts` is `true`, or `false` for `none` and `disable`, unless
+  `thinking` sets it.
 
 ## [0.4.1] - 2026-10-20
 

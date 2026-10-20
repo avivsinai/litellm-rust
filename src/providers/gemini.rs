@@ -112,7 +112,7 @@ pub async fn chat_stream(
 /// Build the `generateContent` / `streamGenerateContent` request body. Both
 /// endpoints take the same `GenerateContentRequest` shape.
 async fn build_chat_body(client: &Client, req: ChatRequest, model: &str) -> Result<Value> {
-    let generation_config = build_generation_config(&req, model);
+    let generation_config = build_generation_config(&req, model)?;
 
     let mut messages = req.messages;
     let system_instruction = extract_system_instruction(&mut messages)?;
@@ -145,7 +145,7 @@ async fn build_chat_body(client: &Client, req: ChatRequest, model: &str) -> Resu
     Ok(body)
 }
 
-fn build_generation_config(req: &ChatRequest, model: &str) -> Map<String, Value> {
+fn build_generation_config(req: &ChatRequest, model: &str) -> Result<Map<String, Value>> {
     let mut generation_config = Map::new();
     if let Some(temp) = req.temperature {
         generation_config.insert("temperature".to_string(), serde_json::json!(temp));
@@ -154,33 +154,59 @@ fn build_generation_config(req: &ChatRequest, model: &str) -> Map<String, Value>
         generation_config.insert("maxOutputTokens".to_string(), serde_json::json!(max_tokens));
     }
     if let Some(thinking_config) =
-        build_thinking_config(req.thinking.as_ref(), req.reasoning_effort.as_ref(), model)
+        build_thinking_config(req.thinking.as_ref(), req.reasoning_effort.as_ref(), model)?
     {
         generation_config.insert("thinkingConfig".to_string(), thinking_config);
     }
-    generation_config
+    Ok(generation_config)
 }
 
 /// Map `thinking` / `reasoning_effort` onto Gemini's
 /// `generationConfig.thinkingConfig` (`includeThoughts`, `thinkingBudget`,
-/// `thinkingLevel`; see <https://ai.google.dev/gemini-api/docs/thinking>).
+/// `thinkingLevel`; see <https://ai.google.dev/api/generate-content#ThinkingConfig>).
 ///
-/// - `thinking` as an object is Gemini-native (for example
+/// - `thinking` as an object with a `type` key is the LiteLLM/Anthropic shape
+///   (`{"type": "enabled", "budget_tokens": 1024}`). `type` sets
+///   `includeThoughts`; `budget_tokens` becomes `thinkingBudget` on models
+///   before Gemini 3 only, as in Python LiteLLM.
+/// - `thinking` as an object without `type` is Gemini-native (for example
 ///   `{"thinkingBudget": 1024}`) and is sent as is.
-/// - `thinking` as a bool sets `includeThoughts`.
-/// - `thinking` as a number sets `thinkingBudget`.
+/// - `thinking` as a bool sets `includeThoughts`; as a number it sets
+///   `thinkingBudget`.
 /// - `reasoning_effort` is used only when `thinking` did not already set a
 ///   budget or a level, because Gemini rejects both in one request. Gemini 3
-///   and newer take it as `thinkingLevel` (lowercase, as in the REST docs).
-///   Gemini 1.x/2.x models do not accept `thinkingLevel`, so the effort maps to
-///   a `thinkingBudget` with the same token values as Python LiteLLM.
+///   and newer take it as a `ThinkingLevel` enum value (`MINIMAL`, `LOW`,
+///   `MEDIUM`, `HIGH`). Older models reject `thinkingLevel`, so there the
+///   effort maps to a `thinkingBudget` with the same token values as Python
+///   LiteLLM. Unless `thinking` set it, `includeThoughts` is `true`, or
+///   `false` for `none` / `disable`. Other effort values are a config error.
 fn build_thinking_config(
     thinking: Option<&Value>,
     reasoning_effort: Option<&Value>,
     model: &str,
-) -> Option<Value> {
+) -> Result<Option<Value>> {
+    let pre_gemini_3 = is_pre_gemini_3(model);
     let mut cfg = Map::new();
     match thinking {
+        Some(Value::Object(obj)) if obj.contains_key("type") => {
+            let budget = obj.get("budget_tokens");
+            let include_thoughts = match obj.get("type").and_then(Value::as_str) {
+                Some("enabled") => budget.and_then(Value::as_i64) != Some(0),
+                Some("disabled") => false,
+                _ => {
+                    return Err(LiteLLMError::Config(
+                        "thinking.type must be \"enabled\" or \"disabled\"".into(),
+                    ))
+                }
+            };
+            cfg.insert("includeThoughts".to_string(), include_thoughts.into());
+            if let (true, Some(budget)) = (pre_gemini_3, budget) {
+                let budget = budget.as_i64().ok_or_else(|| {
+                    LiteLLMError::Config("thinking.budget_tokens must be an integer".into())
+                })?;
+                cfg.insert("thinkingBudget".to_string(), budget.into());
+            }
+        }
         Some(Value::Object(obj)) => cfg.extend(obj.clone()),
         Some(Value::Bool(b)) => {
             cfg.insert("includeThoughts".to_string(), Value::Bool(*b));
@@ -193,19 +219,33 @@ fn build_thinking_config(
     let has_level_or_budget =
         cfg.contains_key("thinkingLevel") || cfg.contains_key("thinkingBudget");
     if let (false, Some(effort)) = (has_level_or_budget, reasoning_effort) {
-        let budget = effort
-            .as_str()
-            .filter(|_| is_pre_gemini_3(model))
-            .and_then(effort_to_thinking_budget);
-        match budget {
-            Some(budget) => cfg.insert("thinkingBudget".to_string(), budget.into()),
-            None => cfg.insert("thinkingLevel".to_string(), effort.clone()),
+        let effort = effort.as_str().ok_or_else(|| {
+            LiteLLMError::Config("gemini reasoning_effort must be a string".into())
+        })?;
+        let (key, value) = if pre_gemini_3 {
+            let budget = effort_to_thinking_budget(effort)
+                .ok_or_else(|| unsupported_reasoning_effort(effort))?;
+            ("thinkingBudget", Value::from(budget))
+        } else {
+            let level = effort_to_thinking_level(effort, model)
+                .ok_or_else(|| unsupported_reasoning_effort(effort))?;
+            ("thinkingLevel", Value::from(level))
         };
+        cfg.insert(key.to_string(), value);
+        let include_thoughts = !matches!(effort, "none" | "disable");
+        cfg.entry("includeThoughts")
+            .or_insert(Value::Bool(include_thoughts));
     }
-    (!cfg.is_empty()).then_some(Value::Object(cfg))
+    Ok((!cfg.is_empty()).then_some(Value::Object(cfg)))
 }
 
-/// Token budgets used by Python LiteLLM for Gemini 2.x `reasoning_effort`.
+fn unsupported_reasoning_effort(effort: &str) -> LiteLLMError {
+    LiteLLMError::Config(format!(
+        "unsupported gemini reasoning_effort `{effort}`; expected none, disable, minimal, low, medium, or high"
+    ))
+}
+
+/// Token budgets used by Python LiteLLM for pre-Gemini-3 `reasoning_effort`.
 fn effort_to_thinking_budget(effort: &str) -> Option<u32> {
     match effort {
         "none" | "disable" => Some(0),
@@ -217,14 +257,33 @@ fn effort_to_thinking_budget(effort: &str) -> Option<u32> {
     }
 }
 
-/// True for `gemini-1.x`, `gemini-2.x`, `gemini-exp*`, and the old
-/// `gemini-pro` / `gemini-flash` names. The `*-latest` aliases point at newer
-/// models. This is the same check as Python LiteLLM's
+/// `ThinkingLevel` enum values for Gemini 3 and newer. Gemini 3 cannot turn
+/// thinking off, so `none` / `disable` use the lowest level. Only Flash
+/// models accept `MINIMAL`; the others get `LOW`, as in Python LiteLLM.
+fn effort_to_thinking_level(effort: &str, model: &str) -> Option<&'static str> {
+    let lowest = if model.to_lowercase().contains("flash") {
+        "MINIMAL"
+    } else {
+        "LOW"
+    };
+    match effort {
+        "none" | "disable" | "minimal" => Some(lowest),
+        "low" => Some("LOW"),
+        "medium" => Some("MEDIUM"),
+        "high" => Some("HIGH"),
+        _ => None,
+    }
+}
+
+/// True for every model that must not get `thinkingLevel`: `gemini-1.x`,
+/// `gemini-2.x`, `gemini-exp*`, the old `gemini-pro` / `gemini-flash` names,
+/// and names without the `gemini-` prefix (Gemma, tuned models). The
+/// `*-latest` aliases point at newer models. This is Python LiteLLM's
 /// `_is_gemini_3_or_newer`, inverted.
 fn is_pre_gemini_3(model: &str) -> bool {
     let name = model.rsplit('/').next().unwrap_or(model).to_lowercase();
     let Some(rest) = name.strip_prefix("gemini-") else {
-        return false;
+        return true;
     };
     let head = rest.split('-').next().unwrap_or_default();
     match head {
@@ -263,26 +322,32 @@ pub async fn embeddings(
         ));
     }
     let content = |text: &str| serde_json::json!({ "parts": [{ "text": text }] });
+    let extra_body = req.extra_body.as_ref();
 
+    // `extra_body` holds per-request `EmbedContentRequest` fields such as
+    // `taskType` or `outputDimensionality`. A batch carries them on each item.
     let single = inputs.len() == 1;
-    let (method, mut body, core_keys) = if single {
-        (
-            "embedContent",
-            serde_json::json!({ "content": content(&inputs[0]) }),
-            &["content"],
-        )
+    let (method, body) = if single {
+        let mut body = serde_json::json!({ "content": content(&inputs[0]) });
+        merge_extra_body(&mut body, extra_body, &["model", "content"])?;
+        ("embedContent", body)
     } else {
-        let requests: Vec<Value> = inputs
+        let requests = inputs
             .iter()
-            .map(|text| serde_json::json!({ "model": format!("models/{model}"), "content": content(text) }))
-            .collect();
+            .map(|text| {
+                let mut item = serde_json::json!({
+                    "model": format!("models/{model}"),
+                    "content": content(text),
+                });
+                merge_extra_body(&mut item, extra_body, &["model", "content"])?;
+                Ok(item)
+            })
+            .collect::<Result<Vec<Value>>>()?;
         (
             "batchEmbedContents",
             serde_json::json!({ "requests": requests }),
-            &["requests"],
         )
     };
-    merge_extra_body(&mut body, req.extra_body.as_ref(), core_keys)?;
     let url = format!("{}/models/{}:{}", base.trim_end_matches('/'), model, method);
 
     let mut builder = client.post(url).header("x-goog-api-key", key).json(&body);
@@ -292,18 +357,22 @@ pub async fn embeddings(
 
     let (resp, _headers) = send_json::<Value>(builder).await?;
     let vectors = if single {
-        vec![embedding_values(resp.get("embedding"))]
+        vec![embedding_values(resp.get("embedding"))?]
     } else {
         resp.get("embeddings")
             .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .map(|item| embedding_values(Some(item)))
-                    .collect()
-            })
-            .unwrap_or_default()
+            .ok_or_else(|| LiteLLMError::Parse("gemini batch response has no embeddings".into()))?
+            .iter()
+            .map(|item| embedding_values(Some(item)))
+            .collect::<Result<Vec<_>>>()?
     };
+    if vectors.len() != inputs.len() {
+        return Err(LiteLLMError::Parse(format!(
+            "gemini returned {} embeddings for {} inputs",
+            vectors.len(),
+            inputs.len()
+        )));
+    }
     // Embedding usage only reports `promptTokenCount`.
     let usage = Usage {
         prompt_tokens: resp
@@ -320,17 +389,18 @@ pub async fn embeddings(
 }
 
 /// Read `values` from a Gemini `ContentEmbedding`.
-fn embedding_values(embedding: Option<&Value>) -> Vec<f32> {
+fn embedding_values(embedding: Option<&Value>) -> Result<Vec<f32>> {
     embedding
         .and_then(|e| e.get("values"))
         .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(Value::as_f64)
+        .ok_or_else(|| LiteLLMError::Parse("gemini embedding has no values array".into()))?
+        .iter()
+        .map(|v| {
+            v.as_f64()
                 .map(|f| f as f32)
-                .collect()
+                .ok_or_else(|| LiteLLMError::Parse("gemini embedding value is not a number".into()))
         })
-        .unwrap_or_default()
+        .collect()
 }
 
 /// Accepts the OpenAI-style embeddings `input`: one string or an array of

@@ -308,6 +308,10 @@ where
 /// parts produced since the previous event. There is no `[DONE]` sentinel; the
 /// stream ends when the HTTP body closes. `"thought": true` parts become
 /// `reasoning`. `functionCall` parts stay in `raw`, as in the other parsers.
+///
+/// Gemini repeats a running `usageMetadata` on many events. `usage` is set
+/// only on the event that carries a `finishReason`, so a consumer sees the
+/// final totals once, as with the other providers.
 pub fn parse_gemini_sse_stream<S>(stream: S) -> ChatStream
 where
     S: Stream<Item = std::result::Result<Bytes, reqwest::Error>> + Send + Unpin + 'static,
@@ -322,7 +326,12 @@ where
             }
             let value: Value = serde_json::from_str(data)
                 .map_err(|e| LiteLLMError::Parse(e.to_string()))?;
-            let usage = value.get("usageMetadata").map(|_| gemini::parse_usage(&value));
+            let finished = value
+                .get("candidates")
+                .and_then(Value::as_array)
+                .is_some_and(|c| c.iter().any(|c| c.get("finishReason").is_some()));
+            let usage = (finished && value.get("usageMetadata").is_some())
+                .then(|| gemini::parse_usage(&value));
             let (content, reasoning) = gemini::split_text_and_reasoning(&value);
             yield ChatStreamChunk {
                 content,
