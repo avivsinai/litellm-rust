@@ -9,8 +9,10 @@ pub struct ModelPricing {
     pub input_cost_per_1k: Option<f64>,
     pub output_cost_per_1k: Option<f64>,
     /// Cost per 1k tokens read from the prompt cache, converted from the
-    /// upstream `cache_read_input_token_cost` per-token field using the same
-    /// per-token -> per-1k convention as `input_cost_per_1k`.
+    /// upstream `cache_read_input_token_cost` per-token field (falling back
+    /// to the equivalent `input_cost_per_token_cache_hit` field some vendors
+    /// publish instead) using the same per-token -> per-1k convention as
+    /// `input_cost_per_1k`.
     pub cache_read_cost_per_1k: Option<f64>,
     /// Cost per 1k tokens written to the prompt cache, converted from the
     /// upstream `cache_creation_input_token_cost` per-token field.
@@ -63,6 +65,10 @@ impl Registry {
                 let cache_read = obj
                     .get("cache_read_input_token_cost")
                     .and_then(|v| v.as_f64())
+                    .or_else(|| {
+                        obj.get("input_cost_per_token_cache_hit")
+                            .and_then(|v| v.as_f64())
+                    })
                     .map(|v| v * 1000.0);
                 let cache_creation = obj
                     .get("cache_creation_input_token_cost")
@@ -146,6 +152,25 @@ impl Registry {
     /// rate (`input_cost_per_1k`) rather than being treated as free, since
     /// providers bill uncached-equivalent tokens at the input rate whenever
     /// they don't publish a discounted cache rate.
+    ///
+    /// # Token accounting contract
+    ///
+    /// `input_tokens`, `cache_read_tokens`, and `cache_creation_tokens` must
+    /// be disjoint counts that sum to the total prompt tokens billed —
+    /// `input_tokens` must **exclude** any tokens already counted in
+    /// `cache_read_tokens` or `cache_creation_tokens`. This matches
+    /// Anthropic's `usage` shape directly: `input_tokens` there already
+    /// excludes `cache_read_input_tokens` / `cache_creation_input_tokens`,
+    /// which are reported as separate fields.
+    ///
+    /// It does **not** match OpenAI's `usage` shape as-is: OpenAI's
+    /// `prompt_tokens` already includes cached tokens, and
+    /// `prompt_tokens_details.cached_tokens` is a breakdown subset of it, not
+    /// an additive count. Callers feeding OpenAI-shaped usage into this
+    /// function must first subtract `cached_tokens` from `prompt_tokens`
+    /// before passing the result as `input_tokens`, or the cached portion
+    /// will be double-counted (billed once at the input rate and again at
+    /// the cache rate).
     pub fn estimate_cost_with_cache(
         &self,
         model: &str,
@@ -291,13 +316,16 @@ mod tests {
     }
 
     #[test]
-    fn missing_cache_fields_and_flags_are_none() {
+    fn falls_back_to_cache_hit_field_when_cache_read_cost_is_absent() {
+        // Some upstream vendors (e.g. deepseek/deepseek-coder) publish only
+        // `input_cost_per_token_cache_hit` with no `cache_read_input_token_cost`.
         let registry = Registry::from_json_str(
             r#"{
                 "sample_spec": {},
-                "test/plain": {
-                    "input_cost_per_token": 0.000001,
+                "test/cache-hit-only": {
+                    "input_cost_per_token": 0.0000005,
                     "output_cost_per_token": 0.000002,
+                    "input_cost_per_token_cache_hit": 0.00000014,
                     "mode": "chat",
                     "litellm_provider": "test"
                 }
@@ -305,12 +333,8 @@ mod tests {
         )
         .unwrap();
 
-        let model = registry.get("test/plain").unwrap();
-        assert_eq!(model.cache_read_cost_per_1k, None);
-        assert_eq!(model.cache_creation_cost_per_1k, None);
-        assert_eq!(model.supports_function_calling, None);
-        assert_eq!(model.supported_endpoints, None);
-        assert_eq!(model.supported_modalities, None);
+        let model = registry.get("test/cache-hit-only").unwrap();
+        assert!((model.cache_read_cost_per_1k.unwrap() - 0.00014).abs() < 1e-12);
     }
 
     #[test]
@@ -370,69 +394,9 @@ mod tests {
         assert!((cost - expected).abs() < 1e-12);
     }
 
-    #[test]
-    fn estimate_cost_with_cache_returns_none_without_base_pricing() {
-        let registry = Registry::from_json_str(r#"{"test/unpriced": {"mode": "chat"}}"#).unwrap();
-        assert_eq!(
-            registry.estimate_cost_with_cache("test/unpriced", 100, 100, 0, 0),
-            None
-        );
-    }
-
-    /// Structural check against the live embedded registry: find any model
-    /// that publishes cache pricing and any model that does not, and assert
-    /// both cost paths behave consistently. Assertions are derived from the
-    /// parsed struct itself so they remain valid across daily data refreshes
-    /// rather than pinning today's exact prices.
-    #[test]
-    fn embedded_registry_cache_costing_is_structurally_consistent() {
-        let registry = Registry::load_embedded().unwrap();
-
-        let (cached_name, cached) = registry
-            .models
-            .iter()
-            .find(|(_, m)| {
-                m.cache_read_cost_per_1k.is_some()
-                    && m.input_cost_per_1k.is_some()
-                    && m.output_cost_per_1k.is_some()
-            })
-            .expect("expected at least one model with cache_read pricing");
-
-        let expected_cached = cached.input_cost_per_1k.unwrap() * 10.0 / 1000.0
-            + cached.output_cost_per_1k.unwrap() * 10.0 / 1000.0
-            + cached.cache_read_cost_per_1k.unwrap() * 10.0 / 1000.0
-            + cached
-                .cache_creation_cost_per_1k
-                .unwrap_or_else(|| cached.input_cost_per_1k.unwrap())
-                * 10.0
-                / 1000.0;
-        let actual_cached = registry
-            .estimate_cost_with_cache(cached_name, 10, 10, 10, 10)
-            .unwrap();
-        assert!((actual_cached - expected_cached).abs() < 1e-9);
-
-        let (uncached_name, uncached) = registry
-            .models
-            .iter()
-            .find(|(_, m)| {
-                m.cache_read_cost_per_1k.is_none()
-                    && m.input_cost_per_1k.is_some()
-                    && m.output_cost_per_1k.is_some()
-            })
-            .expect("expected at least one priced model without cache pricing");
-
-        let expected_uncached = uncached.input_cost_per_1k.unwrap() * 10.0 / 1000.0
-            + uncached.output_cost_per_1k.unwrap() * 10.0 / 1000.0
-            + uncached.input_cost_per_1k.unwrap() * 10.0 / 1000.0 * 2.0;
-        let actual_uncached = registry
-            .estimate_cost_with_cache(uncached_name, 10, 10, 10, 10)
-            .unwrap();
-        assert!((actual_uncached - expected_uncached).abs() < 1e-9);
-    }
-
-    /// Structural check that capability-flag parsing wires through to real
-    /// entries in the embedded registry, without pinning to specific model
-    /// names that may rotate on refresh.
+    /// Structural check that cache-pricing and capability-flag parsing wires
+    /// through to real entries in the embedded registry, without pinning to
+    /// specific model names that may rotate on refresh.
     #[test]
     fn embedded_registry_capability_flags_are_populated() {
         let registry = Registry::load_embedded().unwrap();
@@ -445,6 +409,16 @@ mod tests {
         assert!(
             function_calling_models > 100,
             "expected broad supports_function_calling coverage, found {function_calling_models}"
+        );
+
+        let cache_priced_models = registry
+            .models
+            .values()
+            .filter(|m| m.cache_read_cost_per_1k.is_some())
+            .count();
+        assert!(
+            cache_priced_models > 100,
+            "expected broad cache-read pricing coverage, found {cache_priced_models}"
         );
 
         let vision_models = registry

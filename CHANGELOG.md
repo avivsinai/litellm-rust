@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Added 11 public fields to `ModelPricing`: `cache_read_cost_per_1k`,
+  `cache_creation_cost_per_1k`, `supports_function_calling`,
+  `supports_tool_choice`, `supports_vision`, `supports_reasoning`,
+  `supports_prompt_caching`, `supports_response_schema`,
+  `supports_parallel_function_calling`, `supported_endpoints`, and
+  `supported_modalities`. Downstream code that constructs `ModelPricing` with
+  a struct literal must set them.
+
+### Added
+
+- Read prompt-cache prices, capability flags, and supported endpoints and
+  modalities from the embedded model registry into `ModelPricing`.
+- Add `Registry::estimate_cost_with_cache` and
+  `LiteLLM::estimate_cost_with_cache`. They price cache-read and
+  cache-creation tokens at the model's cache rates, and use the input rate
+  when the model has no cache rate.
+
 ## [0.3.0] - 2026-07-11
 
 ### Breaking Changes

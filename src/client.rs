@@ -134,6 +134,10 @@ impl LiteLLM {
             .estimate_cost(model, input_tokens, output_tokens)
     }
 
+    /// See [`Registry::estimate_cost_with_cache`] for the token-accounting
+    /// contract: `input_tokens` must exclude `cache_read_tokens` and
+    /// `cache_creation_tokens` (Anthropic's `usage` shape already does this;
+    /// OpenAI's `prompt_tokens` does not, so subtract `cached_tokens` first).
     pub fn estimate_cost_with_cache(
         &self,
         model: &str,
