@@ -26,6 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Anthropic requests that set `ChatRequest.reasoning_effort` now send
   `output_config.effort`. Models without effort support return an upstream
   error; before, the field was silently dropped.
+- Added 11 public fields to `ModelPricing`: `cache_read_cost_per_1k`,
+  `cache_creation_cost_per_1k`, `supports_function_calling`,
+  `supports_tool_choice`, `supports_vision`, `supports_reasoning`,
+  `supports_prompt_caching`, `supports_response_schema`,
+  `supports_parallel_function_calling`, `supported_endpoints`, and
+  `supported_modalities`. Downstream code that constructs `ModelPricing` with
+  a struct literal must set them.
 
 ### Added
 
@@ -36,6 +43,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Report Anthropic prompt-cache usage in `Usage.cache_read_input_tokens` and
   `Usage.cache_creation_input_tokens` for non-streaming chat. Streaming chat
   does not report Anthropic usage yet.
+- Read prompt-cache prices, capability flags, and supported endpoints and
+  modalities from the embedded model registry into `ModelPricing`. When
+  `cache_read_input_token_cost` is absent, the cache-read price falls back to
+  `input_cost_per_token_cache_hit`. No current registry entry needs this
+  fallback; it guards against upstream regressions.
+- Add `Registry::estimate_cost_with_cache` and
+  `LiteLLM::estimate_cost_with_cache`. They price cache-read and
+  cache-creation tokens at the model's cache rates, and use the input rate
+  when the model has no cache rate. Cache-creation tokens use the base
+  (5-minute TTL) write rate; 1-hour TTL writes and long-context tier rates
+  are not modeled. `input_tokens` must exclude cached tokens: pass
+  Anthropic counts directly, and subtract the cached count from
+  OpenAI-compatible and Gemini prompt counts first.
 
 ### Fixed
 
