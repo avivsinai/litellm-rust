@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Added `ChatContentPartText.cache_control`; downstream code constructing
+  `ChatContentPartText` with struct literals must initialize the new field.
+  The next release is therefore versioned as `0.5.0`.
+- Anthropic requests now reject `thinking` in `extra_body`. Set
+  `ChatRequest.thinking` instead.
+
+### Added
+
+- Forward `cache_control` on text content parts to Anthropic (system and chat
+  messages), so you can set prompt-caching breakpoints. OpenAI-compatible
+  providers receive the field as is; Gemini and the Responses transport
+  ignore it.
+
+### Fixed
+
+- Anthropic no longer drops `ChatRequest.thinking`; it is sent as `thinking`.
+- Anthropic no longer drops `ChatRequest.reasoning_effort`; it is sent as
+  `output_config.effort`, next to any structured-output `format`.
+
 ## [0.4.1] - 2026-10-20
 
 ### Changed

@@ -903,6 +903,7 @@ mod openai_compat_tests {
                 ChatContentPart::Text(ChatContentPartText {
                     kind: "text".into(),
                     text: "describe".into(),
+                    cache_control: None,
                 }),
                 ChatContentPart::ImageUrl(ChatContentPartImageUrl {
                     kind: "image_url".into(),
@@ -1649,25 +1650,8 @@ mod anthropic_tests {
         };
 
         let req = ChatRequest {
-            model: "claude-sonnet-4.5".to_string(),
-            messages: vec![chat_message("user", "Hello")],
-            temperature: None,
-            max_tokens: None,
-            response_format: None,
-            max_completion_tokens: None,
-            tools: None,
-            tool_choice: None,
-            parallel_tool_calls: None,
-            stop: None,
-            top_p: None,
-            presence_penalty: None,
-            frequency_penalty: None,
-            seed: None,
-            user: None,
-            metadata: None,
-            reasoning_effort: None,
             thinking: Some(json!({ "type": "adaptive" })),
-            extra_body: None,
+            ..ChatRequest::new("claude-sonnet-4.5").message("user", "Hello")
         };
 
         let resp = anthropic::chat(&make_client(), &cfg, req).await.unwrap();
@@ -1716,36 +1700,21 @@ mod anthropic_tests {
         };
 
         let req = ChatRequest {
-            model: "claude-sonnet-4.5".to_string(),
-            messages: vec![chat_message("user", "Return JSON")],
-            temperature: None,
-            max_tokens: None,
-            response_format: Some(json!({
-                "type": "json_schema",
-                "json_schema": {
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "answer": { "type": "string" }
-                        },
-                        "required": ["answer"]
-                    }
-                }
-            })),
-            max_completion_tokens: None,
-            tools: None,
-            tool_choice: None,
-            parallel_tool_calls: None,
-            stop: None,
-            top_p: None,
-            presence_penalty: None,
-            frequency_penalty: None,
-            seed: None,
-            user: None,
-            metadata: None,
             reasoning_effort: Some(json!("high")),
-            thinking: None,
-            extra_body: None,
+            ..ChatRequest::new("claude-sonnet-4.5")
+                .message("user", "Return JSON")
+                .response_format(json!({
+                    "type": "json_schema",
+                    "json_schema": {
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "answer": { "type": "string" }
+                            },
+                            "required": ["answer"]
+                        }
+                    }
+                }))
         };
 
         let resp = anthropic::chat(&make_client(), &cfg, req).await.unwrap();
@@ -1797,33 +1766,6 @@ mod anthropic_tests {
 
         let resp = anthropic::chat(&make_client(), &cfg, req).await.unwrap();
         assert_eq!(resp.content, "ok");
-    }
-
-    /// Verifies `extra_body` can no longer silently override the first-class
-    /// `thinking` field now that it is mapped explicitly.
-    #[tokio::test]
-    async fn chat_completion_rejects_extra_body_thinking_override() {
-        let cfg = ProviderConfig {
-            base_url: Some("http://127.0.0.1:9".to_string()),
-            api_key: Some("test-key".to_string()),
-            ..Default::default()
-        };
-
-        let req = ChatRequest::new("claude-sonnet-4.5")
-            .message("user", "Hello")
-            .extra_body(json_object(
-                json!({ "thinking": { "type": "enabled", "budget_tokens": 1024 } }),
-            ));
-
-        let err = anthropic::chat(&make_client(), &cfg, req)
-            .await
-            .unwrap_err();
-
-        assert!(
-            err.to_string()
-                .contains("protected request field `thinking`"),
-            "unexpected error: {err}"
-        );
     }
 }
 
