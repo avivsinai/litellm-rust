@@ -58,7 +58,7 @@ jobs:
 
       - name: Upload refreshed registry
         if: steps.changes.outputs.changed == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: refreshed-registry
           path: data/model_prices_and_context_window.json
@@ -81,7 +81,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download refreshed registry
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: refreshed-registry
           path: incoming-registry/
@@ -181,22 +181,23 @@ jobs:
           PR_NUMBER: ${{ steps.pr.outputs.number }}
           SHA: ${{ steps.pr.outputs.sha }}
         run: |
-          # GITHUB_TOKEN-pushed PRs spawn a pull_request CI suite. Discover
-          # every exact-SHA suite regardless of state (it may already be
-          # queued, running, or finished by the time we look), approve the
-          # approval-held subset loudly — a 403/404 here is a real
-          # configuration failure — and prove every discovered suite to
-          # completion below so no half-run suite races the merge.
+          # GITHUB_TOKEN-pushed PRs spawn a pull_request CI suite, but
+          # first-party approval and GitHub's async enqueue can delay it
+          # past a short poll. Discover every exact-SHA suite for ~8 minutes
+          # regardless of state, approve the approval-held subset when it
+          # appears — a 403/404 here is a real configuration failure — and
+          # prove every discovered suite to completion below. If none
+          # appears, continue: the workflow_dispatch suite is the
+          # authoritative validation for merge.
           pr_suite_runs=""
-          for _ in $(seq 1 24); do
+          for _ in $(seq 1 96); do
             pr_suite_runs=$(gh run list --workflow ci.yml --commit "$SHA" --event pull_request \
               --json databaseId --jq '.[].databaseId')
             [[ -n "$pr_suite_runs" ]] && break
             sleep 5
           done
           if [[ -z "$pr_suite_runs" ]]; then
-            echo "error: no pull_request CI suite appeared for $SHA" >&2
-            exit 1
+            echo "warning: no pull_request CI suite appeared for $SHA; continuing with the workflow_dispatch CI path" >&2
           fi
           held_runs=$(gh run list --workflow ci.yml --commit "$SHA" --event pull_request \
             --json databaseId,conclusion --jq '.[] | select(.conclusion == "action_required") | .databaseId')

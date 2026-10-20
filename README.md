@@ -1,6 +1,8 @@
 # litellm-rust
 
 [![CI](https://github.com/avivsinai/litellm-rust/actions/workflows/ci.yml/badge.svg)](https://github.com/avivsinai/litellm-rust/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/litellm-rust.svg)](https://crates.io/crates/litellm-rust)
+[![docs.rs](https://docs.rs/litellm-rust/badge.svg)](https://docs.rs/litellm-rust)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust: 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org/)
 
@@ -34,7 +36,22 @@ Minimal Rust SDK port of [LiteLLM](https://github.com/BerriAI/litellm) (library 
 
 ## Installation
 
-Add to your `Cargo.toml`:
+Prefer [crates.io](https://crates.io/crates/litellm-rust). The published crate is **litellm-rust** `0.4.1`.
+
+```bash
+cargo add litellm-rust
+```
+
+Or add it to your `Cargo.toml`:
+
+```toml
+[dependencies]
+litellm-rust = "0.4.1"
+```
+
+This is a library crate (no CLI). There is no `cargo install` binary.
+
+To depend on unreleased `main` instead of the crates.io release:
 
 ```toml
 [dependencies]
@@ -42,6 +59,29 @@ litellm-rust = { git = "https://github.com/avivsinai/litellm-rust" }
 ```
 
 ## Quick Start
+
+### Astra Responses transport
+
+Tool-enabled Astra requests use the opt-in `OpenAIResponses` provider kind. Keep
+the existing `OpenAICompatible` kind for Chat Completions and for cheaper or
+image models. Responses requests use `max_completion_tokens` (mapped to
+`max_output_tokens`); `max_tokens` is rejected. Streaming function-call items
+are exposed in each chunk's `raw` field so callers can accumulate argument
+deltas and send the resulting `ChatRequest` tool output with its `call_id`.
+
+```rust
+let client = LiteLLM::new()?.with_provider(
+    "astra",
+    ProviderConfig::default()
+        .with_kind(ProviderKind::OpenAIResponses)
+        .with_base_url("https://api.openai.com/v1")
+        .with_api_key_env("OPENAI_API_KEY"),
+);
+
+let response = client
+    .completion(ChatRequest::new("astra/gpt-6-astra").message("user", "hello"))
+    .await?;
+```
 
 ```rust
 use litellm_rust::{
