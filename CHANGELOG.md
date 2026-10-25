@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- The release workflow follows the repo release standard: a `chore(release): vX.Y.Z` commit on main triggers tag creation (release App) and the crates.io publish + GitHub release.
+
 ## [0.5.1] - 2026-10-25
 
 ### Changed
