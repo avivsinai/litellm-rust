@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-25
+
+### Changed
+
+- Refresh the embedded pricing, context-window and capability metadata from the
+  current LiteLLM registry. This adds 83 models and updates 118 models. No
+  models are removed.
+
 ## [0.5.0] - 2026-10-20
 
 ### Breaking Changes
