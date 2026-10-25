@@ -164,7 +164,7 @@ if [ "$skip_verify" -eq 0 ]; then
   echo "Running release gates (cargo check/test/clippy/fmt)..."
   cargo check --workspace --all-targets --quiet
   cargo test --workspace --quiet
-  cargo clippy --workspace --all-targets -- -D warnings --quiet
+  cargo clippy --workspace --all-targets --quiet -- -D warnings
   cargo fmt --all -- --check
 else
   echo "Skipping release gates (--skip-verify)"
