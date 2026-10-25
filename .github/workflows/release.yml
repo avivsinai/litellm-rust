@@ -118,7 +118,7 @@ jobs:
 
   github-release:
     name: GitHub Release
-    needs: publish
+    needs: [prepare, publish]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
