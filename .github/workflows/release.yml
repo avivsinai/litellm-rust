@@ -2,46 +2,114 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v[0-9]*.[0-9]*.[0-9]*"
+    branches:
+      - main
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.sha }}
   cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
-  ci:
+  prepare:
+    if: "${{ startsWith(github.event.head_commit.message, 'chore(release): v') }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
-      pull-requests: read
-    uses: ./.github/workflows/ci.yml
+    outputs:
+      tag: ${{ steps.prepare.outputs.tag }}
+      version: ${{ steps.prepare.outputs.version }}
+      release_sha: ${{ steps.prepare.outputs.release_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Resolve release metadata
+        id: prepare
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          commit_subject="${COMMIT_MESSAGE%%$'\n'*}"
+          tag="${commit_subject#chore(release): }"
+          tag="${tag%% (#*}"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)*$ ]] || {
+            echo "::error::Release identifiers must use vX.Y.Z style tags. Got: ${tag}"
+            exit 1
+          }
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "::error::Tag ${tag} already exists."
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "release_sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
   check-version:
-    name: Verify tag matches crate version
-    needs: ci
+    name: Verify release tag matches crate version
+    needs: [prepare]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
       - name: Check tag vs Cargo.toml version
         run: |
           CRATE_VERSION="v$(cargo metadata --format-version=1 --no-deps \
             | jq -r '.packages[0].version')"
-          if [ "$CRATE_VERSION" != "${{ github.ref_name }}" ]; then
-            echo "::error::Tag ${{ github.ref_name }} does not match Cargo.toml version $CRATE_VERSION"
+          if [ "$CRATE_VERSION" != "${{ needs.prepare.outputs.tag }}" ]; then
+            echo "::error::Tag ${{ needs.prepare.outputs.tag }} does not match Cargo.toml version $CRATE_VERSION"
             exit 1
           fi
 
+  create-tag:
+    name: Create release tag
+    needs: [prepare, check-version]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
+          fetch-depth: 0
+      # The v* tag ruleset lets only the release App create tags. Until the
+      # App is configured (vars.RELEASE_APP_CLIENT_ID), the job token is used.
+      - name: Mint release App token
+        id: release-app
+        if: vars.RELEASE_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+      - name: Create release tag after validation
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.release_sha }}
+          GH_TOKEN: ${{ steps.release-app.outputs.token || github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/git/refs" -f ref="refs/tags/${TAG}" -f sha="$RELEASE_SHA" >/dev/null
+          # Later tag-validating steps need the local tag present.
+          git fetch --force --tags origin
+
   publish:
     name: Publish to crates.io
-    needs: check-version
+    needs: create-tag
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
       - run: cargo publish
@@ -57,6 +125,9 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
+          fetch-depth: 0
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v2
         with:
           generate_release_notes: true
