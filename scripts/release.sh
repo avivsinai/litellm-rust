@@ -170,7 +170,7 @@ else
   echo "Skipping release gates (--skip-verify)"
 fi
 
-git add CHANGELOG.md Cargo.toml Cargo.lock
+git add CHANGELOG.md Cargo.toml
 git diff --cached --quiet && {
   echo "error: release prep produced no staged changes" >&2
   exit 1
