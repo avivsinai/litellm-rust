@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- GitHub Actions `Release request` workflow so a version can be cut from `workflow_dispatch` without running `scripts/release.sh` locally.
+
 ## [0.5.4] - 2026-10-25
 ### Fixed
 - The GitHub Release job now declares needs: [prepare, publish]; v0.5.3's release step still failed with 'requires a tag' because needs.prepare.outputs.tag was out of scope.
