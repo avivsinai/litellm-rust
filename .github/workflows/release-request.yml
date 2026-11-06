@@ -1,0 +1,105 @@
+name: Release request
+run-name: Release request ${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Exact release version (X.Y.Z)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: >-
+    release-request-${{
+      github.ref != 'refs/heads/main' &&
+      format('rejected-{0}', github.run_id) ||
+      github.repository
+    }}
+  cancel-in-progress: false
+
+jobs:
+  require-main:
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Reject dispatch from a non-main ref
+        run: |
+          echo "::error::Run this workflow from main (got ${GITHUB_REF})."
+          exit 1
+
+  release-request:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Validate explicit release request
+        id: validate
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          APP_CLIENT_ID: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_VERSION#v}"
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::version must be X.Y.Z, got: ${RELEASE_VERSION}"
+            exit 1
+          fi
+          if [[ -z "$APP_CLIENT_ID" ]]; then
+            echo "::error::vars.RELEASE_APP_CLIENT_ID is not set"
+            exit 1
+          fi
+          if [[ -z "$APP_PRIVATE_KEY" ]]; then
+            echo "::error::secrets.RELEASE_APP_PRIVATE_KEY is not set"
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Create repository-scoped release PR token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+          fetch-depth: 0
+          token: ${{ steps.app.outputs.token }}
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+
+      - name: Configure git identity
+        env:
+          APP_SLUG: ${{ steps.app.outputs.app-slug }}
+          APP_INSTALLATION_ID: ${{ steps.app.outputs.installation-id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${APP_INSTALLATION_ID}+${APP_SLUG}[bot]@users.noreply.github.com"
+
+      - name: Prepare release pull request
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: ./scripts/release.sh --ci "${{ steps.validate.outputs.version }}"

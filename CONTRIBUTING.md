@@ -67,6 +67,16 @@ Use clear, descriptive commit messages:
 5. Add WireMock-based tests in `tests/integration_providers.rs`
 6. Update `data/provider_endpoints_support.json` if applicable
 
+## Releasing
+
+Cut a release from GitHub Actions: **Actions → Release request → Run workflow** on `main` with version `X.Y.Z`. Fill `CHANGELOG.md`'s Unreleased section first. That opens a `chore(release): vX.Y.Z` PR with squash auto-merge; after merge, `release.yml` tags, publishes to crates.io, and creates the GitHub release.
+
+You can still prepare a release locally from a clean, up-to-date `main`:
+
+```bash
+./scripts/release.sh 0.5.5
+```
+
 ## Reporting Issues
 
 When reporting issues, please include:
